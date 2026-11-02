@@ -19,6 +19,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), versioni seco
 - Interfaccia PySide6: passi numerati, anteprima con maniglie, regolazioni avanzate con anteprima veloce, scheda Batch, Impostazioni.
 - Packaging: spec PyInstaller e workflow GitHub Actions (non ancora eseguiti).
 - `CONTRACTS.md`: firme pubbliche tra i moduli.
+- Packaging: icona dell'app (finestra, exe Windows, app macOS, AppImage) generata da `packaging/make_icon.py`; build PyInstaller provato su Linux.
 
 ### Corretto
 - L'avviso "mosaico più piccolo dell'area" compare solo se l'area è un rettangolo verde.

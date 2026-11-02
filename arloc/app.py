@@ -19,6 +19,10 @@ def run() -> int:
         app.setStyleSheet(style_path().read_text(encoding="utf-8"))
     except OSError:
         pass
+    from PySide6.QtGui import QIcon
+    icon = style_path().parent / "resources" / "arloc.png"
+    if icon.exists():
+        app.setWindowIcon(QIcon(str(icon)))
     win = MainWindow()
     win.show()
     return app.exec()

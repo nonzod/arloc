@@ -47,8 +47,10 @@ Dettagli tecnici di ogni milestone in [IMPLEMENTAZIONE.md](IMPLEMENTAZIONE.md) �
 - [ ] Prova con chiave API reale, Anthropic e OpenRouter (finora solo test simulati)
 
 ## M5: Distribuzione
-- [ ] Build PyInstaller Windows / macOS / Linux (AppImage) — spec scritto, build mai eseguito
-- [ ] GitHub Actions su tag `v*` — workflow scritto, mai eseguito; icona AppImage provvisoria
+- [x] Build PyInstaller Linux verificato (GUI, CLI compose, batch dall'eseguibile; ~500 MB, ~200 MB compresso)
+- [x] Icona dell'app (`packaging/make_icon.py`)
+- [ ] Build PyInstaller Windows / macOS (spec pronto, mai eseguito su quei sistemi)
+- [ ] GitHub Actions su tag `v*` — workflow scritto, mai eseguito
 - [ ] Prova su macchine pulite
 
 ## Da migliorare

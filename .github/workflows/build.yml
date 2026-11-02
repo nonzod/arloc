@@ -40,7 +40,7 @@ jobs:
           mkdir -p AppDir/usr/bin
           cp -r dist/Arloc/. AppDir/usr/bin/
           printf '[Desktop Entry]\nType=Application\nName=Arloc\nExec=Arloc\nIcon=arloc\nCategories=Graphics;\n' > AppDir/arloc.desktop
-          python3 -c "import base64;open('AppDir/arloc.png','wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='))"
+          cp arloc/ui/resources/arloc.png AppDir/arloc.png
           printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/Arloc" "$@"\n' > AppDir/AppRun
           chmod +x AppDir/AppRun
           curl -L -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
