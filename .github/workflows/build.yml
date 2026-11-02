@@ -1,0 +1,64 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      - run: uv run pytest -q
+      - name: PyInstaller
+        run: uv run pyinstaller packaging/arloc.spec --noconfirm
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/Arloc -DestinationPath Arloc-windows-${{ github.ref_name }}.zip
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -volname Arloc -srcfolder dist/Arloc.app -ov -format UDZO Arloc-macos-${{ github.ref_name }}.dmg
+
+      - name: Package (Linux AppImage)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfuse2 libegl1 libxkbcommon-x11-0
+          mkdir -p AppDir/usr/bin
+          cp -r dist/Arloc/. AppDir/usr/bin/
+          printf '[Desktop Entry]\nType=Application\nName=Arloc\nExec=Arloc\nIcon=arloc\nCategories=Graphics;\n' > AppDir/arloc.desktop
+          python3 -c "import base64;open('AppDir/arloc.png','wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='))"
+          printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/Arloc" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+          curl -L -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir Arloc-linux-${{ github.ref_name }}.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arloc-${{ runner.os }}
+          path: |
+            Arloc-*.zip
+            Arloc-*.dmg
+            Arloc-*.AppImage
+
+      - name: Allega alla release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Arloc-*.zip
+            Arloc-*.dmg
+            Arloc-*.AppImage
