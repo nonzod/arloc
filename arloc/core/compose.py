@@ -7,7 +7,7 @@ import numpy as np
 from . import effects
 from .cutout import cutout_mosaic, inset_quad, quad_from_mask, use_shape
 from .detect import find_green_area, find_mosaic_corners
-from .geometry import order_quad, placement_quad, plane_size, px_per_cm
+from .geometry import auto_mosaic_size, order_quad, placement_quad, plane_size, px_per_cm
 from .imageio import load_image
 from .models import ArlocError, ComposeResult, Job, Quad
 
@@ -63,6 +63,9 @@ def _apply_cutout(job: Job, mosaic: np.ndarray) -> tuple[np.ndarray, Quad]:
 def compose(job: Job, preview_max: int | None = None) -> ComposeResult:
     warnings: list[str] = []
     params = job.params.clamped()
+    auto = (job.misure or "reali").strip().lower() == "automatiche"
+    if not auto and min(job.larghezza_sfondo_cm or 0, job.larghezza_mosaico_cm or 0, job.altezza_mosaico_cm or 0) <= 0:
+        raise ArlocError("Mancano le misure in cm: indicale oppure scegli le misure automatiche.")
 
     bg = load_image(job.sfondo)[:, :, :3]
     mosaic = load_image(job.mosaico)
@@ -80,7 +83,8 @@ def compose(job: Job, preview_max: int | None = None) -> ComposeResult:
     elif found is not None:
         area, green_mask = found
     else:
-        raise ArlocError("Non trovo il rettangolo verde: indica i 4 angoli dell'area sullo sfondo.")
+        raise ArlocError("Non trovo il rettangolo verde: indica i 4 angoli dell'area sullo sfondo."
+                         + (" Con le misure automatiche serve per sapere dove mettere il mosaico." if auto else ""))
 
     # anteprima veloce: tutto in scala ridotta
     s = 1.0
@@ -94,15 +98,22 @@ def compose(job: Job, preview_max: int | None = None) -> ComposeResult:
 
     # 2. mosaico raddrizzato
     mosaic, mquad = _apply_cutout(job, mosaic)
-    rect = rectify_mosaic(mosaic, mquad, job.larghezza_mosaico_cm, job.altezza_mosaico_cm)
+    if auto:
+        # misure automatiche: proporzioni del quad del mosaico, dimensione = spazio dell'area x riempimento
+        mw, mh, ppc = auto_mosaic_size(area, mquad, params.riempimento)
+        rect = rectify_mosaic(mosaic, mquad, mw, mh)
+    else:
+        rect = rectify_mosaic(mosaic, mquad, job.larghezza_mosaico_cm, job.altezza_mosaico_cm)
+        ppc = px_per_cm(W, job.larghezza_sfondo_cm)
+        mw, mh = job.larghezza_mosaico_cm * ppc, job.altezza_mosaico_cm * ppc
 
     # 3. scala e posizione
-    ppc = px_per_cm(W, job.larghezza_sfondo_cm)
-    mw, mh = job.larghezza_mosaico_cm * ppc, job.altezza_mosaico_cm * ppc
     dest = placement_quad(area, mw, mh, params, ppc)
 
     pw, ph = plane_size(area)
-    if mw > pw * 1.15 or mh > ph * 1.15:
+    if auto:
+        pass
+    elif mw > pw * 1.15 or mh > ph * 1.15:
         warnings.append("Il mosaico risulterà più grande dell'area segnata: potrebbe coprire parte dello sfondo.")
     elif green_mask is not None and (mw < pw * 0.85 or mh < ph * 0.85):
         warnings.append("Il mosaico risulterà più piccolo dell'area segnata: il verde scoperto viene ricostruito.")
@@ -139,5 +150,6 @@ def compose(job: Job, preview_max: int | None = None) -> ComposeResult:
     out = np.clip(shaded * (1 - a3) + mosaic_px * a3, 0, 255).astype(np.uint8)
 
     d = dest.as_array()
+    mosaic_mask = np.where(alpha > 0.5, 255, 0).astype(np.uint8)
     return ComposeResult(image=out, center=(float(d[:, 0].mean()), float(d[:, 1].mean())),
-                         mosaic_quad=Quad.from_array(d), warnings=warnings)
+                         mosaic_quad=Quad.from_array(d), warnings=warnings, mosaic_mask=mosaic_mask)

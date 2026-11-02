@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout,
                                QLabel, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
                                QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
@@ -23,6 +23,7 @@ LABELS = {
     "temperatura": ("Temperatura colore (freddo / caldo)", "", 2),
     "armonizzazione": ("Armonizzazione con lo sfondo", "", 2),
     "grana": ("Grana fotografica", "", 2),
+    "riempimento": ("Riempimento area", "", 2),
 }
 
 _FALLBACK_PRESETS = {
@@ -150,7 +151,11 @@ class StepsPanel(QWidget):
         self.c1.body.addWidget(self.btn_bg)
         self.c1.body.addWidget(self.lbl_bg_file)
         self.c1.body.addWidget(self.lbl_area)
-        self.c1.body.addLayout(_row("Larghezza reale", self.sp_bg_w))
+        self.row_bg_w = QWidget()
+        rl = _row("Larghezza reale", self.sp_bg_w)
+        rl.setContentsMargins(0, 0, 0, 0)
+        self.row_bg_w.setLayout(rl)
+        self.c1.body.addWidget(self.row_bg_w)
         col.addWidget(self.c1)
 
         # ② Mosaico
@@ -163,22 +168,52 @@ class StepsPanel(QWidget):
         self.sp_mo_h = _spin()
         for s in (self.sp_mo_w, self.sp_mo_h):
             s.valueChanged.connect(self._sizes)
+        # selettore Misure: Automatiche | Reali (cm)
+        self.misure_btns: dict[str, QPushButton] = {}
+        self.grp_misure = QButtonGroup(self)
+        self.grp_misure.setExclusive(True)
+        seg = QHBoxLayout()
+        seg.setSpacing(0)
+        for key, text in (("automatiche", "Automatiche"), ("reali", "Reali (cm)")):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setProperty("segment", True)
+            self.grp_misure.addButton(b)
+            self.misure_btns[key] = b
+            seg.addWidget(b)
+        # selettore a tutta larghezza: con l'etichetta a fianco non entrava nel pannello (340 px)
+        for b in self.misure_btns.values():
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.setMinimumWidth(0)
+        seg_row = QHBoxLayout()
+        seg_row.addLayout(seg, 1)
+        self.lbl_auto_hint = QLabel("Il mosaico riempie lo spazio indicato sullo sfondo.")
+        self.lbl_auto_hint.setObjectName("Muted")
+        self.lbl_auto_hint.setWordWrap(True)
         x = QLabel("×")
         x.setAlignment(Qt.AlignCenter)
         dims = QHBoxLayout()
         dims.setSpacing(8)
-        l = QLabel("Misure")
+        l = QLabel("Dimensioni")
         l.setFixedWidth(104)
         dims.addWidget(l)
         dims.addWidget(self.sp_mo_w, 1)
         dims.addWidget(x)
         dims.addWidget(self.sp_mo_h, 1)
+        dims.setContentsMargins(0, 0, 0, 0)
         self.lbl_mo_hint = QLabel("larghezza × altezza")
         self.lbl_mo_hint.setObjectName("Muted")
+        self.box_real = QWidget()
+        rv = QVBoxLayout(self.box_real)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(8)
+        rv.addLayout(dims)
+        rv.addWidget(self.lbl_mo_hint)
         self.c2.body.addWidget(self.btn_mo)
         self.c2.body.addWidget(self.lbl_mo_file)
-        self.c2.body.addLayout(dims)
-        self.c2.body.addWidget(self.lbl_mo_hint)
+        self.c2.body.addLayout(seg_row)
+        self.c2.body.addWidget(self.lbl_auto_hint)
+        self.c2.body.addWidget(self.box_real)
         col.addWidget(self.c2)
 
         # ③ Istruzioni
@@ -202,7 +237,14 @@ class StepsPanel(QWidget):
         al.setContentsMargins(0, 0, 0, 0)
         al.setSpacing(8)
         for name, (lo, hi) in ComposeParams.RANGES.items():
-            al.addLayout(self._make_slider(name, lo, hi))
+            lay = self._make_slider(name, lo, hi)
+            if name == "riempimento":   # vale solo con le misure automatiche
+                self.w_fill = QWidget()
+                self.w_fill.setLayout(lay)
+                lay.setContentsMargins(0, 0, 0, 0)
+                al.addWidget(self.w_fill)
+            else:
+                al.addLayout(lay)
         self.btn_light = QPushButton("Suggerisci luce dallo sfondo")
         self.btn_light.clicked.connect(self.suggestLight)
         self.btn_reset_params = QPushButton("Azzera regolazioni")
@@ -212,6 +254,17 @@ class StepsPanel(QWidget):
         al.addWidget(self.btn_reset_params)
         self.adv.hide()
         self.c3.body.addWidget(self.adv)
+        # Ritocco AI finale (sperimentale, spento di default, mai nell'anteprima veloce)
+        self.chk_retouch = QCheckBox("Ritocco AI finale (sperimentale)")
+        self.chk_retouch.setToolTip("Un modello AI armonizza luce e ombre attorno al mosaico. "
+                                    "Si applica solo a GENERA e al salvataggio.")
+        self.lbl_retouch = QLabel("")
+        self.lbl_retouch.setObjectName("Muted")
+        self.lbl_retouch.setWordWrap(True)
+        self.c3.body.addWidget(self.chk_retouch)
+        self.c3.body.addWidget(self.lbl_retouch)
+        self._retouch_ok, self._retouch_cost = False, ""
+        self.set_retouch_available(False)
         col.addWidget(self.c3)
 
         # ④ Formato
@@ -285,6 +338,10 @@ class StepsPanel(QWidget):
 
         self._last_text = ""
         self.set_params(ComposeParams())
+        for b in self.grp_misure.buttons():
+            b.toggled.connect(lambda on: on and self._misure_changed())
+        lm = str(self._qs.value("misure", "automatiche"))
+        self.misure_btns.get(lm, self.misure_btns["automatiche"]).setChecked(True)
         last = str(self._qs.value("preset", "shopify"))
         self.preset_btns.get(last, self.preset_btns["shopify"]).setChecked(True)
         self.update_checks()
@@ -346,6 +403,23 @@ class StepsPanel(QWidget):
         self.adv.setVisible(on)
         self.btn_adv.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
 
+    # ---- ritocco AI
+    def retouch_enabled(self) -> bool:
+        return self.chk_retouch.isEnabled() and self.chk_retouch.isChecked()
+
+    def set_retouch_available(self, ok: bool, cost: str = ""):
+        """ok=False: serve OpenRouter (opzione disabilitata, con spiegazione). cost: es. "circa 0,07 $"."""
+        self._retouch_ok = ok
+        if cost:
+            self._retouch_cost = cost
+        self.chk_retouch.setEnabled(ok)
+        if not ok:
+            self.chk_retouch.setChecked(False)
+            self.lbl_retouch.setText("Richiede OpenRouter: scegli questo servizio nelle Impostazioni (con Anthropic non è disponibile).")
+        else:
+            c = f" Costo stimato: {self._retouch_cost} a immagine." if self._retouch_cost else " È a pagamento."
+            self.lbl_retouch.setText("Richiede OpenRouter, solo su GENERA e Salva (non nell'anteprima)." + c)
+
     # ---- testo
     def instructions(self) -> str:
         return self.txt.toPlainText().strip()
@@ -397,6 +471,19 @@ class StepsPanel(QWidget):
         self.cb_fmt.setCurrentText(cp.formato.upper())
         self._custom_quality = cp.qualita
 
+    # ---- misure
+    def misure(self) -> str:
+        return "reali" if self.misure_btns["reali"].isChecked() else "automatiche"
+
+    def _misure_changed(self):
+        auto = self.misure() == "automatiche"
+        self._qs.setValue("misure", self.misure())
+        self.row_bg_w.setVisible(not auto)
+        self.box_real.setVisible(not auto)
+        self.lbl_auto_hint.setVisible(auto)
+        self.w_fill.setVisible(auto)
+        self._sizes()
+
     # ---- stato
     def _sizes(self, *_):
         self.update_checks()
@@ -434,19 +521,21 @@ class StepsPanel(QWidget):
             m.append("l'immagine di sfondo")
         elif not self._has_area:
             m.append("l'area dello sfondo (clicca i 4 angoli)")
-        if self.sp_bg_w.value() <= 0:
+        real = self.misure() == "reali"
+        if real and self.sp_bg_w.value() <= 0:
             m.append("la larghezza dello sfondo")
         if not self._has_mo:
             m.append("l'immagine del mosaico")
-        if self.sp_mo_w.value() <= 0 or self.sp_mo_h.value() <= 0:
+        if real and (self.sp_mo_w.value() <= 0 or self.sp_mo_h.value() <= 0):
             m.append("le misure del mosaico")
         if self.preset_key() is None:
             m.append("il formato")
         return m
 
     def update_checks(self):
-        self.c1.set_done(self._has_bg and self._has_area and self.sp_bg_w.value() > 0)
-        self.c2.set_done(self._has_mo and self.sp_mo_w.value() > 0 and self.sp_mo_h.value() > 0)
+        real = self.misure() == "reali"
+        self.c1.set_done(self._has_bg and self._has_area and (not real or self.sp_bg_w.value() > 0))
+        self.c2.set_done(self._has_mo and (not real or (self.sp_mo_w.value() > 0 and self.sp_mo_h.value() > 0)))
         self.c3.set_done(bool(self.instructions()))
         self.c4.set_done(self.preset_key() is not None)
         m = self.missing()
@@ -454,9 +543,9 @@ class StepsPanel(QWidget):
         self.lbl_missing.setVisible(bool(m))
         self.btn_gen.setEnabled(not m and not getattr(self, "_busy", False))
 
-    def set_busy(self, busy: bool):
+    def set_busy(self, busy: bool, text: str = "Sto lavorando…"):
         self._busy = busy
-        self.btn_gen.setText("Sto lavorando…" if busy else "GENERA")
+        self.btn_gen.setText(text if busy else "GENERA")
         self.update_checks()
 
     def set_can_save(self, ok: bool):

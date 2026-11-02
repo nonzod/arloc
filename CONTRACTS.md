@@ -16,11 +16,12 @@ Immagini = numpy BGR uint8 (BGRA se con alpha). Messaggi utente in italiano, err
   - `quad_from_mask(mask) -> Quad | None`, `quad_coverage(mask, quad) -> float`, `use_shape(mode, mask, quad, img=None) -> bool` (`mode`: `auto` | `rettangolo` | `forma`; auto = forma se copertura < 92% o PNG con alpha).
 - `arloc/core/geometry.py`
   - `order_quad(pts) -> Quad`, `parse_area(text) -> Quad` (formato `"x1,y1;x2,y2;x3,y3;x4,y4"`, ordine qualsiasi; ArlocError se invalido),
-  - `px_per_cm(bg_width_px, bg_width_cm) -> float`, `placement_quad(area, mosaic_w_px, mosaic_h_px, params, px_per_cm) -> Quad`.
+  - `auto_mosaic_size(area, mosaic_quad, riempimento) -> (w_px, h_px, px_per_cm)` (misure automatiche), `px_per_cm(bg_width_px, bg_width_cm) -> float`, `placement_quad(area, mosaic_w_px, mosaic_h_px, params, px_per_cm) -> Quad`.
 - `arloc/core/effects.py` — ombre, spessore, armonizzazione, grana, inpaint verde residuo.
 - `arloc/core/compose.py`
   - `compose(job: Job, preview_max: int | None = None) -> ComposeResult` — se `preview_max` è dato, lavora su copia ridotta (lato lungo ≤ preview_max) per l'anteprima veloce. NON chiama Claude: usa `job.params` così com'è.
   - Scontorno: `Job.scontorno` (`"auto"` default | `"rettangolo"` | `"forma"`) e `Job.mosaico_maschera` (uint8 0/255, anche a risoluzione ridotta; None = calcolata con `cutout_mosaic`). In modalità forma immagine e maschera sono raddrizzate con la stessa omografia del quad e la maschera è l'alpha (ombra e spessore ne derivano). Le misure in cm si riferiscono al rettangolo del quad. Se `mosaico_quad` è None, in auto/forma il quad deriva dalla maschera (`quad_from_mask`).
+  - Misure: `Job.misure` = `"reali"` (default; servono `larghezza_sfondo_cm`, `larghezza_mosaico_cm`, `altezza_mosaico_cm`, altrimenti `ArlocError`) | `"automatiche"` (cm ignorati/0; serve comunque un'area; il mosaico è scalato per entrare nell'area, proporzioni del suo quad, `ComposeParams.riempimento` 0,5-1,0). Nessun avviso di dimensione in automatico.
   - `rectify_mosaic(img, quad, w_cm, h_cm) -> np.ndarray` (usata anche dalla UI per mostrare il ritaglio).
 - `arloc/core/presets.py`
   - `SHOPIFY`, `ETSY` (OutputPreset), `parse_preset(text) -> OutputPreset` (`"shopify"`, `"etsy"`, `"custom 1600x1200 png"`), 
@@ -35,9 +36,14 @@ Immagini = numpy BGR uint8 (BGRA se con alpha). Messaggi utente in italiano, err
   - `parse_instructions(text, current: ComposeParams, settings=None) -> tuple[ComposeParams, str | None]` — secondo valore = avviso utente o None. Mai eccezioni verso il chiamante.
   - `suggest_light(bg_img_or_path, settings=None) -> tuple[dict | None, str | None]` — dict con chiavi ombra_*.
   - `verify_api_key(key, provider=None) -> tuple[bool, str]` (provider di default da `Settings`).
+  - `check_models(settings=None, key=None) -> list[tuple[str, str, str]]` — `(ruolo, livello, messaggio)`, ruolo `instructions|light|retouch`, livello `ok|warn|error`. Senza Qt, mai eccezioni; elenco modelli OpenRouter in cache per la sessione (`openrouter_models()`).
+- `arloc/core/harmonize.py` (ritocco AI finale, sperimentale, solo OpenRouter)
+  - `harmonize(result: ComposeResult, mosaic_mask_out: np.ndarray | None, settings=None) -> tuple[np.ndarray, str | None]` — immagine finale BGR (originale se scartato o in errore) e avviso italiano. Mai eccezioni. Richiede `result.mosaic_mask` (o `mosaic_mask_out`). `estimate_cost_usd(settings=None) -> float | None`.
+  - `ComposeResult.mosaic_mask` (uint8 0/255, dimensioni di `image`, facoltativo, None se assente) e `Job.ritocco_ai: bool = False` (lo applica il chiamante: UI, batch, CLI; compose non lo chiama).
+  - Settings: `openrouter_model_retouch="google/gemini-3.1-flash-image"`.
 - `arloc/core/batch.py`
   - `BatchRow` dataclass: `index:int, raw:dict, job: Job|None, error: str|None, status: str ("in attesa"|"ok"|"errore"|"saltata"), output: Path|None`.
-  - `read_batch(path, default_preset: OutputPreset) -> list[BatchRow]` (colonna facoltativa `scontorno`: auto|rettangolo|forma; CSV `,`/`;`, XLSX, decimali con virgola, percorsi relativi al file).
+  - `read_batch(path, default_preset: OutputPreset) -> list[BatchRow]` (colonne cm facoltative: tutte vuote = misure automatiche, parziali = errore di riga; colonna facoltativa `misure`: reali|automatiche; colonna facoltativa `scontorno`: auto|rettangolo|forma; colonna facoltativa `ritocco_ai`: sì|no, vuoto = no; CSV `,`/`;`, XLSX, decimali con virgola, percorsi relativi al file).
   - `run_batch(rows, out_dir, progress=None, should_stop=None, use_claude=True) -> Path` (report CSV). `progress(i, total, row)`.
   - `write_template(path)` — copia/genera il modello.
 - Packaging: `packaging/arloc.spec`, `.github/workflows/build.yml`, `templates/modello_batch.csv|xlsx`.

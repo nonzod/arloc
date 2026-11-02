@@ -50,6 +50,26 @@ def plane_size(area: Quad) -> tuple[float, float]:
     return float(w), float(h)
 
 
+def auto_mosaic_size(area: Quad, mosaic_quad: Quad, riempimento: float) -> tuple[float, float, float]:
+    """Misure automatiche: (larghezza px, altezza px, px_per_cm fittizio) del mosaico nel piano dell'area.
+
+    Il mosaico mantiene le proprie proporzioni (lati opposti medi del suo quad) ed è la massima
+    dimensione che entra nel rettangolo del piano dell'area, moltiplicata per `riempimento`.
+    px/cm fittizio: il lato corto del mosaico vale AUTO_SHORT_SIDE_CM, così ombra, spessore e
+    spostamenti hanno proporzioni simili alla modalità reale.
+    """
+    aw, ah = plane_size(area)
+    mw0, mh0 = plane_size(mosaic_quad)
+    if min(aw, ah, mw0, mh0) < 1:
+        raise ArlocError("L'area o il mosaico sono troppo piccoli.")
+    k = min(aw / mw0, ah / mh0) * riempimento
+    mw, mh = mw0 * k, mh0 * k
+    return mw, mh, min(mw, mh) / AUTO_SHORT_SIDE_CM
+
+
+AUTO_SHORT_SIDE_CM = 30.0
+
+
 def placement_quad(area: Quad, mosaic_w_px: float, mosaic_h_px: float,
                    params: ComposeParams, ppc: float) -> Quad:
     """Dove cade il mosaico (angoli in pixel) dentro l'area, con prospettiva."""

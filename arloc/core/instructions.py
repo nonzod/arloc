@@ -31,6 +31,7 @@ Parametri (intervalli):
 - rotazione_gradi (-180..180): rotazione extra del mosaico; positivo = senso orario.
 - offset_x_cm, offset_y_cm (-100..100): spostamento dal centro dell'area; x positivo = destra, y positivo = basso.
 - ombra_direzione_gradi (0..360): verso in cui cade l'ombra. 0 = destra, 90 = basso, 180 = sinistra, 270 = alto.
+- riempimento (0.5..1): solo misure automatiche, quanto dello spazio dell'area occupa il mosaico (default 0.92); "più grande" = valore più alto.
 - ombra_distanza_cm (0..5): distanza dell'ombra (default 0.6).
 - ombra_morbidezza (0..1): sfocatura dell'ombra; 0 = netta, 1 = molto morbida (default 0.5).
 - ombra_opacita (0..1): intensita' dell'ombra (default 0.45).
@@ -130,7 +131,23 @@ def _or_headers(key: str) -> dict:
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json", **_OR_HEADERS}
 
 
-def _or_http_message(status: int) -> str:
+def _or_err_text(data) -> str:
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("message") or "")
+    return str(err or "")
+
+
+def _or_http_message(status: int, model: str = "", detail: str = "") -> str:
+    d = detail.lower()
+    m = f"«{model}»" if model else "scelto"
+    if status in (400, 404) and model:
+        if "image" in d and ("support" in d or "input" in d or "modalit" in d):
+            return (f"Il modello {m} non accetta le immagini: scegline un altro nelle Impostazioni "
+                    "(Modelli avanzati, pulsante Verifica).")
+        if status == 404 or "no endpoints" in d or "not a valid model" in d or "not found" in d:
+            return (f"Il modello {m} non esiste su OpenRouter: correggi il nome nelle Impostazioni "
+                    "(Modelli avanzati, pulsante Verifica).")
     if status in (401, 403):
         return "Chiave OpenRouter non valida o non autorizzata."
     if status == 402:
@@ -138,7 +155,7 @@ def _or_http_message(status: int) -> str:
     if status == 429:
         return "Troppe richieste a OpenRouter: riprova tra poco."
     if status in (404, 400):
-        return "Il modello scelto non e' disponibile su OpenRouter: controlla il nome nelle Impostazioni."
+        return "Il modello scelto non è disponibile su OpenRouter: controlla il nome nelle Impostazioni."
     return "Errore di OpenRouter."
 
 
@@ -200,7 +217,7 @@ def _call_openrouter(model: str, system: str, text: str, schema: dict, image_b64
         # response_format non supportato dal modello/servizio: riprova una volta senza
         if attempt == 0 and code in (400, 404, 422, 500, 502, 503):
             continue
-        raise ValueError(_or_http_message(code))
+        raise ValueError(_or_http_message(code, model, _or_err_text(data)))
     try:
         msg = payload["choices"][0]["message"]
         content = msg.get("content")
@@ -234,6 +251,13 @@ def _model_for(settings, kind: str) -> str:
     return getattr(settings, "model_" + kind)
 
 
+def _safe_model(settings, kind: str) -> str:
+    try:
+        return _model_for(settings or _settings.load_settings(), kind)
+    except Exception:
+        return ""
+
+
 def _key_for(settings):
     return _settings.get_openrouter_key() if settings.provider == "openrouter" else _settings.get_api_key()
 
@@ -243,10 +267,16 @@ def _missing_key_msg(settings) -> str:
     return f"Chiave API di {who} mancante"
 
 
-def _error_message(e: Exception) -> str:
+def _error_message(e: Exception, model: str = "") -> str:
     if isinstance(e, ValueError):
         return f"{e} Uso i parametri attuali."
     name = type(e).__name__
+    if "NotFound" in name:
+        who = f"«{model}» " if model else ""
+        return (f"Il modello {who}non esiste: correggi il nome nelle Impostazioni "
+                "(Modelli avanzati, pulsante Verifica). Uso i parametri attuali.")
+    if "BadRequest" in name and "image" in str(e).lower() and model:
+        return f"Il modello «{model}» non accetta le immagini: scegline un altro nelle Impostazioni. Uso i parametri attuali."
     if "Authentication" in name or "PermissionDenied" in name:
         return "Chiave API non valida o non autorizzata: uso i parametri attuali."
     if "Connection" in name or "Timeout" in name:
@@ -284,7 +314,7 @@ def parse_instructions(text, current: ComposeParams, settings=None):
             _cache_put("instructions.json", key, changes)
         return current.updated(**changes), None
     except Exception as e:  # mai eccezioni verso il chiamante
-        return current, _error_message(e)
+        return current, _error_message(e, _safe_model(settings, "instructions"))
 
 
 def _light_image_b64(bg) -> tuple[str, str]:
@@ -329,7 +359,8 @@ def suggest_light(bg_img_or_path, settings=None):
         p = ComposeParams().updated(**res)
         return {k: getattr(p, k) for k in res}, None
     except Exception as e:
-        msg = re.sub("[Uu]so i parametri attuali", "nessun suggerimento", _error_message(e))
+        msg = re.sub("[Uu]so i parametri attuali", "nessun suggerimento",
+                     _error_message(e, _safe_model(settings, "light")))
         return None, msg
 
 
@@ -345,7 +376,7 @@ def _verify_openrouter(key: str) -> tuple[bool, str]:
     if r.status_code in (401, 403):
         return False, "Chiave non valida."
     if r.status_code == 402:
-        return True, "Chiave valida, ma il credito e' esaurito."
+        return True, "Chiave valida, ma il credito è esaurito."
     if r.status_code == 429:
         return True, "Chiave valida (limite di richieste raggiunto)."
     return False, "Verifica non riuscita."
@@ -372,3 +403,137 @@ def verify_api_key(key: str, provider: str | None = None) -> tuple[bool, str]:
         if "RateLimit" in name:
             return True, "Chiave valida (limite di richieste raggiunto)."
         return False, "Verifica non riuscita."
+
+
+# ---------------------------------------------------------------- verifica dei modelli
+_MODELS_CACHE: dict | None = None   # id -> voce di /models, per la durata della sessione
+
+ROLE_NAMES = {"instructions": "Modello per le istruzioni", "light": "Modello per la luce",
+              "retouch": "Modello per il ritocco"}
+
+
+def openrouter_models(refresh: bool = False) -> dict | None:
+    """Elenco pubblico dei modelli OpenRouter (id -> voce), in cache per la sessione. None se non raggiungibile."""
+    global _MODELS_CACHE
+    if _MODELS_CACHE is not None and not refresh:
+        return _MODELS_CACHE
+    try:
+        r = httpx.get(OPENROUTER_URL + "/models", headers=_OR_HEADERS, timeout=30.0)
+        if r.status_code >= 400:
+            return None
+        items = r.json().get("data")
+        models = {m["id"]: m for m in items if isinstance(m, dict) and m.get("id")}
+        if not models:
+            return None
+        _MODELS_CACHE = models
+        return models
+    except Exception:
+        return None
+
+
+def _modalities(entry: dict) -> tuple[set, set, set]:
+    a = entry.get("architecture") or {}
+    sup = entry.get("supported_parameters") or []
+    return set(a.get("input_modalities") or []), set(a.get("output_modalities") or []), set(sup)
+
+
+def _fits_role(entry: dict, role: str) -> bool:
+    i, o, _ = _modalities(entry)
+    if role == "instructions":
+        return "text" in o
+    if role == "light":
+        return "text" in o and "image" in i
+    return "image" in o and "image" in i
+
+
+def _suggest(model: str, models: dict, role: str, n: int = 3) -> list[str]:
+    import difflib
+    ids = [k for k, v in models.items() if _fits_role(v, role) and not k.startswith("openrouter/")
+           and ":" not in k]
+    want = model.lower()
+    scored = sorted(ids, key=lambda k: -difflib.SequenceMatcher(None, want, k.lower()).ratio())
+    best = [k for k in scored if difflib.SequenceMatcher(None, want, k.lower()).ratio() >= 0.35][:n]
+    vendor = want.split("/")[0]
+    if len(best) < n:   # stesso produttore, nomi più vicini
+        same = [k for k in scored if k.split("/")[0] == vendor and k not in best]
+        best += same[: n - len(best)]
+    return best
+
+
+def _check_or_model(models: dict, role: str, model: str) -> tuple[str, str]:
+    label = ROLE_NAMES[role]
+    entry = models.get(model)
+    if entry is None:
+        sug = _suggest(model, models, role)
+        tail = (" Modelli simili adatti: " + ", ".join(f"«{s}»" for s in sug) + ".") if sug else ""
+        return "error", f"{label}: «{model}» non esiste su OpenRouter.{tail}"
+    i, o, sup = _modalities(entry)
+    if role == "retouch":
+        if "image" not in o:
+            return "error", f"{label}: «{model}» non produce immagini, ma qui serve un modello che le restituisce."
+        if "image" not in i:
+            return "error", f"{label}: «{model}» non accetta immagini in ingresso, ma qui serve per ritoccare la foto."
+        return "ok", f"{label}: «{model}» va bene."
+    if "text" not in o:
+        return "error", (f"{label}: «{model}» genera immagini, ma qui serve un modello che risponde con testo.")
+    if role == "light" and "image" not in i:
+        return "error", f"{label}: «{model}» non legge le immagini, ma per la luce serve un modello che le guarda."
+    if not ({"structured_outputs", "response_format"} & sup):
+        return "warn", (f"{label}: «{model}» non supporta le risposte strutturate: funzionerà, ma meno affidabile.")
+    return "ok", f"{label}: «{model}» va bene."
+
+
+def _check_anthropic(key: str | None, role: str, model: str, state: dict) -> tuple[str, str]:
+    label = ROLE_NAMES[role]
+    if not key:
+        return "warn", f"{label}: non posso controllare «{model}» senza la chiave."
+    try:
+        import anthropic
+        if "client" not in state:
+            state["client"] = anthropic.Anthropic(api_key=key, max_retries=1, timeout=30.0)
+        state["client"].models.retrieve(model)
+        return "ok", f"{label}: «{model}» va bene."
+    except Exception as e:
+        name = type(e).__name__
+        if "NotFound" in name:
+            sug = []
+            try:
+                import difflib
+                ids = [m.id for m in state["client"].models.list(limit=100)]
+                sug = difflib.get_close_matches(model, ids, n=3, cutoff=0.4)
+            except Exception:
+                pass
+            tail = (" Modelli simili: " + ", ".join(f"«{s}»" for s in sug) + ".") if sug else ""
+            return "error", f"{label}: «{model}» non esiste su Anthropic.{tail}"
+        if "Authentication" in name or "PermissionDenied" in name:
+            return "error", f"{label}: la chiave non è valida, non posso controllare «{model}»."
+        return "warn", f"{label}: non sono riuscito a controllare «{model}» (rete o servizio non raggiungibile)."
+
+
+def check_models(settings=None, key: str | None = None) -> list[tuple[str, str, str]]:
+    """Controlla i modelli configurati per il servizio scelto.
+
+    Ritorna [(ruolo, livello, messaggio)], livello = "ok" | "warn" | "error"; ruolo = instructions | light | retouch.
+    Mai eccezioni. `key`: chiave da usare (solo Anthropic); default quella salvata.
+    """
+    try:
+        settings = settings or _settings.load_settings()
+        out: list[tuple[str, str, str]] = []
+        if settings.provider == "openrouter":
+            models = openrouter_models()
+            for role in ("instructions", "light", "retouch"):
+                m = getattr(settings, "openrouter_model_" + role, "") or ""
+                if models is None:
+                    out.append((role, "warn", f"{ROLE_NAMES[role]}: non riesco a controllare «{m}» "
+                                "(elenco dei modelli di OpenRouter non raggiungibile)."))
+                else:
+                    out.append((role, *_check_or_model(models, role, m)))
+            return out
+        key = key or _settings.get_api_key()
+        state: dict = {}
+        for role in ("instructions", "light"):
+            m = getattr(settings, "model_" + role, "") or ""
+            out.append((role, *_check_anthropic(key, role, m, state)))
+        return out
+    except Exception as e:  # noqa: BLE001
+        return [("", "warn", "Non sono riuscito a controllare i modelli.")]

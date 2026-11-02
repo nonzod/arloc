@@ -145,6 +145,8 @@ mosaico_px  = (larghezza_mosaico_cm × px_per_cm, altezza_mosaico_cm × px_per_c
 
 `larghezza_sfondo_cm` è la larghezza reale dell'**intera foto** (es. "la scrivania inquadrata misura 120 cm"). È un'approssimazione valida per foto dall'alto. Se l'area indicata differisce di oltre il 15% dalla grandezza calcolata del mosaico, l'interfaccia mostra un avviso non bloccante ("Il mosaico risulterà più grande/piccolo dell'area segnata").
 
+**Misure automatiche** (`Job.misure = "automatiche"`, senza cm): le proporzioni del mosaico vengono dal suo quadrilatero (media dei lati opposti, come `plane_size`); il mosaico è la massima dimensione con quel rapporto che entra nel rettangolo del piano dell'area, moltiplicata per `riempimento` (0,5-1,0, default 0,92). Per ombra, spessore e spostamenti serve un px/cm: si usa un valore fittizio per cui il **lato corto del mosaico vale 30 cm** (`geometry.AUTO_SHORT_SIDE_CM`), così gli effetti hanno proporzioni simili alla modalità reale. Serve sempre un'area (verde o 4 punti); nessun avviso di dimensione.
+
 ### 5.3 Posizionamento in prospettiva (`geometry.placement_quad`)
 
 1. Dall'area `Q` si stima il rettangolo del piano `R` (larghezza = media dei lati alto/basso, altezza = media dei lati sinistro/destro).
@@ -210,6 +212,16 @@ Nell'interfaccia ogni campo è un cursore, nascosto sotto "Regolazioni avanzate"
 
 Anche con migliaia di immagini al mese, e grazie alla cache, la spesa resta di pochi dollari: molto sotto i **100 $/mese** disponibili. I modelli si possono cambiare nelle impostazioni avanzate (es. `claude-opus-5-5` se servisse più qualità sulla luce). Prima di implementare, verificare con l'SDK la sintassi corrente di `output_config` e degli ID dei modelli.
 
+### 6.5 Verifica dei modelli (`instructions.check_models`)
+
+Il pulsante "Verifica" controlla chiave e modelli. OpenRouter: `GET /api/v1/models` (pubblico, in cache per la sessione) con `architecture.input_modalities|output_modalities` e `supported_parameters`. Requisiti: istruzioni = output `text`; luce = output `text` + input `image`; ritocco = input `image` + output `image`. Senza `structured_outputs`/`response_format` si avvisa (funziona, ma meno affidabile). Se il modello non esiste si propongono fino a 3 nomi adatti al ruolo (`difflib`). Anthropic: `client.models.retrieve`. All'uso, un 404/400 di OpenRouter nomina il modello e dice cosa correggere.
+
+### 6.6 Ritocco AI finale (`harmonize.harmonize`, sperimentale)
+
+Solo OpenRouter, facoltativo e spento di default; solo su GENERA / Salva / batch / CLI, mai nell'anteprima veloce. `POST /chat/completions` con `modalities: ["image","text"]`, immagine composta (JPEG, lato lungo ≤ 1536) e un prompt in inglese molto vincolante (armonizza luce, ombre di contatto e colore; non cambiare composizione, tessere, oggetti). Risposta letta da `choices[0].message.images[].image_url.url` (data URL base64; per tolleranza anche parti `image_url` del contenuto). Modello predefinito `google/gemini-3.1-flash-image` (input e output immagine, ~$0,06 per 1.000 token d'immagine in uscita, circa 1.100 token a immagine: ≈ $0,07 a ritocco; la UI lo calcola dai prezzi di `/models`).
+
+**Protezione del mosaico** (sempre attiva): l'output è riportato alle dimensioni originali e confrontato con l'originale (correlazione di fase + ECC affine su grigi ridotti); spostamento > 1,5 % del lato lungo, deformazione > 2 % o proporzioni cambiate → ritocco scartato e avviso. Altrimenti, dentro la maschera del mosaico erosa si rimettono i pixel originali (gain di luminosità preso dall'output, max ±10 %), bordo sfumato, fuori maschera vale l'output AI. Cache su disco (`cache_dir`) per hash(immagine + modello + prompt). Errori (chiave, 402, 429, timeout, nessuna immagine) → immagine originale + avviso, mai blocco. Il ritocco precede il preset.
+
 ---
 
 ## 7. Modalità batch
@@ -220,13 +232,14 @@ Anche con migliaia di immagini al mese, e grazie alla cache, la spesa resta di p
 |---|---|---|---|
 | `sfondo` | sì | `sfondi/MARMO 1.png` | Relativo alla cartella del file batch, oppure assoluto |
 | `mosaico` | sì | `mosaici/M30.jpg` | Come sopra |
-| `larghezza_sfondo_cm` | sì | `120` | Larghezza reale dell'intera foto di sfondo |
-| `larghezza_mosaico_cm` | sì | `30` | |
-| `altezza_mosaico_cm` | sì | `20` | |
+| `larghezza_sfondo_cm` | no* | `120` | Larghezza reale dell'intera foto di sfondo |
+| `larghezza_mosaico_cm` | no* | `30` | |
+| `altezza_mosaico_cm` | no* | `20` | *Le tre colonne cm vanno compilate tutte (misure reali) o lasciate tutte vuote (misure automatiche); compilate in parte = errore di riga |
 | `area` | no | `812,540;1310,540;1310,880;812,880` | Vuota = cerca il rettangolo verde. Punti in pixel, ordine qualsiasi |
 | `istruzioni` | no | `ombra morbida verso destra` | Testo libero |
 | `preset` | no | `shopify` · `etsy` · `custom 1600x1200 png` | Vuoto = preset scelto nell'interfaccia |
 | `nome_output` | no | `M30_marmo1` | Vuoto = `<mosaico>_<sfondo>` |
+| `misure` | no | `reali` · `automatiche` | Vuoto = automatiche se le colonne cm sono vuote, altrimenti reali; se valorizzata forza la modalità |
 | `scontorno` | no | `auto` · `rettangolo` · `forma` | Vuoto = `auto`: usa la forma reale del mosaico (bordi irregolari, tondo, PNG trasparente) solo se si discosta dal rettangolo, altrimenti il rettangolo |
 
 - I CSV vengono letti con rilevamento automatico del separatore (`,` o `;`, quello usato dall'Excel italiano). Le virgole decimali sono accettate (`30,5`).

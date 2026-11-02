@@ -64,6 +64,8 @@ class MainWindow(QMainWindow):
         self.view = "sfondo"
         self.show_before = False
         self.result_img = None          # immagine mostrata nella vista Risultato
+        self.plain_img = None           # stesso risultato senza ritocco AI (None = nessun ritocco applicato)
+        self.show_plain = False
         self.has_result = False
         self._full: tuple[str, ComposeResult] | None = None
         self._seq = 0
@@ -117,6 +119,7 @@ class MainWindow(QMainWindow):
         self.canvas.quadEdited.connect(self._quad_edited)
         self._notice_sig.connect(self._notice)
         self._sync_all()
+        self._refresh_retouch()
 
     # ------------------------------------------------------------------ UI
     def _build_topbar(self) -> QWidget:
@@ -190,6 +193,10 @@ class MainWindow(QMainWindow):
         self.btn_before.setToolTip("Confronta con lo sfondo originale")
         self.btn_before.toggled.connect(self._toggle_before)
         bl.addWidget(self.btn_before)
+        self.btn_plain = _segment("Senza ritocco AI")
+        self.btn_plain.setToolTip("Confronta con il risultato prima del ritocco AI")
+        self.btn_plain.toggled.connect(self._toggle_plain)
+        bl.addWidget(self.btn_plain)
         bl.addStretch(1)
         self.btn_reset = QPushButton("Ripristina automatico")
         self.btn_reset.setToolTip("Torna agli angoli e allo scontorno automatici")
@@ -504,10 +511,25 @@ class MainWindow(QMainWindow):
         self.btn_before.setText("Mostra dopo" if on else "Mostra prima")
         self._show(fit=False)
 
+    def _toggle_plain(self, on):
+        self.show_plain = on
+        self.btn_plain.setText("Mostra con ritocco AI" if on else "Senza ritocco AI")
+        self._show(fit=False)
+
+    def _set_plain(self, plain):
+        """plain: risultato senza ritocco AI, oppure None se il ritocco non è stato applicato."""
+        self.plain_img = plain
+        self.btn_plain.blockSignals(True)
+        self.btn_plain.setChecked(False)
+        self.btn_plain.setText("Senza ritocco AI")
+        self.btn_plain.blockSignals(False)
+        self.show_plain = False
+
     def _show(self, fit=True):
         c = self.canvas
         v = self.view
         self.btn_before.setVisible(v == "risultato")
+        self.btn_plain.setVisible(v == "risultato" and self.plain_img is not None)
         self.btn_reset.setVisible(v in ("sfondo", "mosaico"))
         self.toolbar.setVisible(v == "mosaico")
         c.set_mask(None, reset_undo=False)
@@ -543,7 +565,8 @@ class MainWindow(QMainWindow):
                 c.set_placeholder("Il risultato comparirà qui dopo GENERA")
                 return
             bh, bw = self.bg_img.shape[:2]
-            img = self.bg_img if self.show_before else self.result_img
+            img = (self.bg_img if self.show_before else
+                   self.plain_img if (self.show_plain and self.plain_img is not None) else self.result_img)
             c.set_image(img, logical_size=(bw, bh), fit=fit)
             c.set_quad(None, False)
 
@@ -603,7 +626,7 @@ class MainWindow(QMainWindow):
         return Job(
             sfondo=self.bg_path, mosaico=self.mo_path,
             larghezza_sfondo_cm=self.panel.bg_width_cm(),
-            larghezza_mosaico_cm=mw, altezza_mosaico_cm=mh,
+            larghezza_mosaico_cm=mw, altezza_mosaico_cm=mh, misure=self.panel.misure(),
             area=self.bg_area,
             mosaico_quad=self.mo_quad if self.mo_quad_user else None,
             scontorno=self.scontorno,
@@ -614,7 +637,7 @@ class MainWindow(QMainWindow):
     def _sig(self, params, text) -> str:
         j = self._job(params, text)
         return repr((str(j.sfondo), str(j.mosaico), j.larghezza_sfondo_cm, j.larghezza_mosaico_cm,
-                     j.altezza_mosaico_cm, j.area, j.mosaico_quad, j.scontorno, self.mo_mask_ver, params.to_dict(), text))
+                     j.altezza_mosaico_cm, j.misure, j.area, j.mosaico_quad, j.scontorno, self.mo_mask_ver, params.to_dict(), text))
 
     def _changed(self, switch: bool):
         self._full = None if switch or self.has_result else self._full
@@ -642,6 +665,7 @@ class MainWindow(QMainWindow):
                 return
             self._notice(" ".join(res.warnings), "warn")
             self.result_img = res.image
+            self._set_plain(None)
             self.has_result = True
             self._full = None
             self.panel.set_can_save(not self._busy)
@@ -720,6 +744,7 @@ class MainWindow(QMainWindow):
         text = self.panel.instructions()
         params0 = self.panel.params()
         settings = self.settings
+        retouch = self.panel.retouch_enabled()
         self._notice("", "warn")
         self._set_busy(True)
         job_fn = self._job
@@ -739,17 +764,51 @@ class MainWindow(QMainWindow):
             self.panel.mark_text_parsed(text)
             self._full = (self._sig(params, text), result)
             self.result_img, self.has_result = result.image, True
+            self._set_plain(None)
             msgs = ([warn] if warn else []) + list(result.warnings)
             self._notice(" ".join(msgs), "warn")
-            self._set_busy(False)
             self.view_btns["risultato"].setChecked(True)
             self.view = "risultato"
             self.btn_before.setChecked(False)
             self._show(fit=True)
+            if retouch:
+                self._run_retouch(result, msgs)
+            else:
+                self._set_busy(False)
 
         def fail(e):
             self._set_busy(False)
             self._error(e)
+
+        run_async(work, done, fail)
+
+    def _run_retouch(self, result: ComposeResult, msgs: list[str]):
+        """Ritocco AI finale in background sul risultato a piena risoluzione."""
+        self.panel.set_busy(True, "Ritocco AI in corso…")
+        self._notice("Ritocco AI in corso… può richiedere qualche decina di secondi.", "ok")
+        settings = self.settings
+        seq = self._seq
+
+        def work():
+            from arloc.core.harmonize import harmonize
+            return harmonize(result, result.mosaic_mask, settings)
+
+        def done(r):
+            img, warn = r
+            self._set_busy(False)
+            if seq != self._seq:
+                return
+            if warn is None:
+                self._set_plain(result.image)
+                self.result_img = img
+                self._notice(" ".join(msgs), "warn")
+                self._show(fit=False)
+            else:
+                self._notice(" ".join(msgs + [warn]), "warn")
+
+        def fail(e):
+            self._set_busy(False)
+            self._notice(" ".join(msgs + ["Ritocco AI non riuscito: tenuto il risultato originale."]), "warn")
 
         run_async(work, done, fail)
 
@@ -770,21 +829,32 @@ class MainWindow(QMainWindow):
         params = self.panel.params()
         cached = self._full if (self._full and self._full[0] == self._sig(params, text)) else None
         job_fn = self._job
+        retouch = self.panel.retouch_enabled()
+        settings = self.settings
         self._set_busy(True)
         self.panel.btn_save.setText("Salvo…")
 
         def work():
+            import dataclasses
             from arloc.core.compose import compose
             from arloc.core.presets import export
             res = cached[1] if cached else compose(job_fn(params, text))
-            return res, export(res, preset, base)
+            final, warn = res, None
+            if retouch:   # il ritocco va prima del preset (la risposta è in cache su disco: nessuna seconda chiamata)
+                from arloc.core.harmonize import harmonize
+                img, warn = harmonize(res, res.mosaic_mask, settings)
+                final = dataclasses.replace(res, image=img, warnings=list(res.warnings))
+            return res, export(final, preset, base), warn
 
         def done(r):
-            res, out = r
+            res, out, warn = r
             self._full = (self._sig(params, text), res)
             self.panel.btn_save.setText("Salva immagine…")
             self._set_busy(False)
-            self._notice(f"Immagine salvata: {out}", "ok")
+            if warn:
+                self._notice(f"Immagine salvata: {out}. {warn}", "warn")
+            else:
+                self._notice(f"Immagine salvata: {out}", "ok")
 
         def fail(e):
             self.panel.btn_save.setText("Salva immagine…")
@@ -794,6 +864,25 @@ class MainWindow(QMainWindow):
         run_async(work, done, fail)
 
     # ------------------------------------------------------------ varie
+    def _refresh_retouch(self):
+        """Abilita il ritocco AI solo con OpenRouter e mostra il costo stimato (dai prezzi pubblici)."""
+        ok = getattr(self.settings, "provider", "anthropic") == "openrouter"
+        self.panel.set_retouch_available(ok)
+        if not ok:
+            return
+        settings = self.settings
+
+        def work():
+            from arloc.core.harmonize import estimate_cost_usd
+            return estimate_cost_usd(settings)
+
+        def done(c):
+            if c:
+                txt = f"circa {c:.2f} $".replace(".", ",")
+                self.panel.set_retouch_available(True, txt)
+
+        run_async(work, done, lambda e: None)
+
     def _batch_preset(self):
         return self.panel.preset()
 
@@ -803,5 +892,6 @@ class MainWindow(QMainWindow):
             return
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
+            self._refresh_retouch()
             self.panel.set_custom_preset(self.settings.custom_preset)
             self.batch.set_settings(self.settings)

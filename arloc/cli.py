@@ -27,6 +27,7 @@ PARAM_FLAGS = {
     "--temperatura": "temperatura",
     "--armonizzazione": "armonizzazione",
     "--grana": "grana",
+    "--riempimento": "riempimento",
 }
 
 
@@ -41,8 +42,10 @@ def _add_compose(sub) -> None:
     p = sub.add_parser("compose", help="compone un mosaico su uno sfondo")
     p.add_argument("--sfondo", required=True, help="foto di sfondo")
     p.add_argument("--mosaico", required=True, help="foto del mosaico")
-    p.add_argument("--sfondo-cm", required=True, type=float, help="larghezza reale dell'intero sfondo, in cm")
-    p.add_argument("--mosaico-cm", required=True, help='misure del mosaico in cm, es. "30x20"')
+    p.add_argument("--sfondo-cm", type=float, help="larghezza reale dell'intero sfondo, in cm (misure reali)")
+    p.add_argument("--mosaico-cm", help='misure del mosaico in cm, es. "30x20" (misure reali)')
+    p.add_argument("--misure", choices=["auto", "reali"],
+                   help="auto = il mosaico riempie l'area senza misure in cm; reali = scala reale (default: auto se mancano le misure)")
     p.add_argument("--scontorno", choices=["auto", "rettangolo", "forma"], default="auto",
                    help="scontorno del mosaico (default: auto)")
     p.add_argument("--area", help='4 angoli in pixel "x1,y1;x2,y2;x3,y3;x4,y4" (default: rettangolo verde)')
@@ -50,13 +53,22 @@ def _add_compose(sub) -> None:
     p.add_argument("--out", required=True, help="file di output (l'estensione dipende dal formato)")
     p.add_argument("--anteprima", type=int, metavar="PX", help="lavora su una copia ridotta (lato lungo in px)")
     p.add_argument("--istruzioni", help="istruzioni in testo libero (richiede la chiave API Claude)")
+    p.add_argument("--ritocco-ai", action="store_true",
+                   help="ritocco AI finale, SPERIMENTALE (solo OpenRouter, a pagamento; non vale con --anteprima)")
     for flag, name in PARAM_FLAGS.items():
         p.add_argument(flag, type=float, dest=name, help=f"{name} (default {getattr(ComposeParams(), name)})")
     p.set_defaults(func=_run_compose)
 
 
 def _run_compose(a: argparse.Namespace) -> int:
-    w_cm, h_cm = _parse_size_cm(a.mosaico_cm)
+    have = [v is not None for v in (a.sfondo_cm, a.mosaico_cm)]
+    misure = a.misure or ("reali" if all(have) else "auto")
+    if misure == "reali" and not all(have):
+        raise ArlocError("Per le misure reali servono --sfondo-cm e --mosaico-cm (oppure usa --misure auto).")
+    if misure == "auto":
+        w_cm = h_cm = 0.0
+    else:
+        w_cm, h_cm = _parse_size_cm(a.mosaico_cm)
     params = ComposeParams().updated(**{f.name: getattr(a, f.name) for f in fields(ComposeParams)})
     warnings: list[str] = []
     if a.istruzioni:
@@ -68,12 +80,20 @@ def _run_compose(a: argparse.Namespace) -> int:
         except ImportError:
             warnings.append("Le istruzioni in testo libero non sono ancora disponibili.")
     preset = parse_preset(a.preset) if a.preset else None
-    job = Job(sfondo=Path(a.sfondo), mosaico=Path(a.mosaico), larghezza_sfondo_cm=a.sfondo_cm,
+    job = Job(sfondo=Path(a.sfondo), mosaico=Path(a.mosaico), larghezza_sfondo_cm=(a.sfondo_cm or 0.0) if misure == "reali" else 0.0,
               larghezza_mosaico_cm=w_cm, altezza_mosaico_cm=h_cm,
               area=parse_area(a.area) if a.area else None,
-              istruzioni=a.istruzioni or "", params=params, preset=preset, scontorno=a.scontorno)
+              istruzioni=a.istruzioni or "", params=params, preset=preset, scontorno=a.scontorno,
+              misure="reali" if misure == "reali" else "automatiche")
 
     result = compose(job, preview_max=a.anteprima)
+    if a.ritocco_ai and not a.anteprima:
+        from .core.harmonize import harmonize
+        result.image, warn = harmonize(result, result.mosaic_mask)
+        if warn:
+            warnings.append(warn)
+    elif a.ritocco_ai:
+        warnings.append("Il ritocco AI non si applica all'anteprima ridotta.")
     out = Path(a.out)
     if preset:
         path = export(result, preset, out)

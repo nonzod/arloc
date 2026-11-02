@@ -83,7 +83,7 @@ def test_invalid_row_is_flagged_not_fatal(tmp_path):
 
 def test_missing_column(tmp_path):
     f = tmp_path / "b.csv"
-    f.write_text("sfondo;mosaico\na;b\n", encoding="utf-8")
+    f.write_text("sfondo\na\n", encoding="utf-8")
     with pytest.raises(ArlocError):
         batch.read_batch(f, DEFAULT)
 
@@ -128,3 +128,32 @@ def test_run_batch_report_and_failure_isolation(tmp_path, monkeypatch):
     assert calls[0].params.ombra_direzione_gradi == 180
     txt = report.read_text(encoding="utf-8-sig")
     assert "stato;errore;file_generato" in txt.splitlines()[0] and "boom" in txt
+
+
+def test_misure_automatiche_se_colonne_vuote_e_parziali(tmp_path):
+    make_files(tmp_path)
+    f = tmp_path / "m.csv"
+    f.write_text(
+        "sfondo;mosaico;larghezza_sfondo_cm;larghezza_mosaico_cm;altezza_mosaico_cm;misure\n"
+        "sfondi/MARMO 1.jpg;mosaici/M30.jpg;;;;\n"
+        "sfondi/MARMO 1.jpg;mosaici/M30.jpg;120;30;20;\n"
+        "sfondi/MARMO 1.jpg;mosaici/M30.jpg;120;;20;\n"
+        "sfondi/MARMO 1.jpg;mosaici/M30.jpg;120;30;20;automatiche\n"
+        "sfondi/MARMO 1.jpg;mosaici/M30.jpg;;;;reali\n", encoding="utf-8")
+    rows = batch.read_batch(f, DEFAULT)
+    assert rows[0].job.misure == "automatiche" and rows[0].job.larghezza_sfondo_cm == 0
+    assert rows[1].job.misure == "reali" and rows[1].job.larghezza_mosaico_cm == 30
+    assert rows[2].job is None and "larghezza_mosaico_cm" in rows[2].error
+    assert rows[3].job.misure == "automatiche"
+    assert rows[4].job is None and "larghezza_sfondo_cm" in rows[4].error
+
+
+def test_ritocco_ai_column(tmp_path):
+    from arloc.core import batch
+    for n in ("a.jpg", "b.jpg"):
+        (tmp_path / n).write_bytes(b"x")
+    f = tmp_path / "b.csv"
+    f.write_text("sfondo;mosaico;ritocco_ai\na.jpg;b.jpg;sì\na.jpg;b.jpg;\na.jpg;b.jpg;no\na.jpg;b.jpg;forse\n", encoding="utf-8")
+    rows = batch.read_batch(f, DEFAULT)
+    assert [r.job.ritocco_ai if r.job else None for r in rows] == [True, False, False, None]
+    assert "ritocco_ai" in rows[3].error

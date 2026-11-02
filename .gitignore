@@ -1,0 +1,55 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# --- Ambiente virtuale (uv) ---
+.venv/
+venv/
+# uv.lock va versionato
+
+# --- Test e strumenti ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- Build / PyInstaller ---
+# packaging/arloc.spec va versionato: non ignorare *.spec
+build/
+dist/
+*.AppImage
+AppDir/
+appimagetool
+Arloc-*.zip
+Arloc-*.dmg
+
+# --- Output generati da Arloc ---
+risultati/
+output/
+out/
+report_*.csv
+
+# --- Segreti (le chiavi API stanno nel portachiavi di sistema, mai nel repo) ---
+.env
+.env.*
+*.key
+
+# --- Editor e IDE ---
+.vscode/
+.idea/
+*.swp
+*~
+.claude/
+.serena/
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Log ---
+*.log

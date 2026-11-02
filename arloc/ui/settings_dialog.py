@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QGridLayout, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QToolButton,
+                               QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QToolButton,
                                QVBoxLayout, QWidget)
 
 from arloc.core.models import OutputPreset
@@ -17,7 +17,7 @@ def _section(text: str) -> QLabel:
 
 
 class SettingsDialog(QDialog):
-    _verified = Signal(bool, str)
+    _verified = Signal(bool, str, object)
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
@@ -25,8 +25,20 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Impostazioni")
         self.setMinimumWidth(480)
         self._s = settings
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 24, 24, 24)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        # il contenuto scorre se lo schermo è basso (con i modelli avanzati e l'esito della verifica è alto)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._body = QWidget()
+        self._body.setObjectName("ScrollInner")
+        self._scroll.setWidget(self._body)
+        outer.addWidget(self._scroll, 1)
+        lay = QVBoxLayout(self._body)
+        lay.setContentsMargins(24, 24, 24, 12)
         lay.setSpacing(12)
 
         # Servizio AI e chiave API
@@ -53,6 +65,8 @@ class SettingsDialog(QDialog):
         lay.addLayout(row)
         self.lbl_verify = QLabel("")
         self.lbl_verify.setWordWrap(True)
+        self.lbl_verify.setTextFormat(Qt.RichText)
+        self.lbl_verify.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(self.lbl_verify)
         self._verified.connect(self._show_verify)
 
@@ -119,6 +133,8 @@ class SettingsDialog(QDialog):
         af.addRow("Modello per la luce", self.m_light)
         af.addRow("Modello per le istruzioni", self.o_instr)
         af.addRow("Modello per la luce", self.o_light)
+        self.o_retouch = QLineEdit(getattr(settings, "openrouter_model_retouch", ""))
+        af.addRow("Modello per il ritocco", self.o_retouch)
         self._af = af
         self.adv.hide()
         lay.addWidget(self.adv)
@@ -128,6 +144,7 @@ class SettingsDialog(QDialog):
 
         lay.addStretch(1)
         btns = QHBoxLayout()
+        btns.setContentsMargins(24, 8, 24, 20)
         btns.addStretch(1)
         cancel = QPushButton("Annulla")
         cancel.clicked.connect(self.reject)
@@ -136,7 +153,7 @@ class SettingsDialog(QDialog):
         ok.clicked.connect(self._accept)
         btns.addWidget(cancel)
         btns.addWidget(ok)
-        lay.addLayout(btns)
+        outer.addLayout(btns)
 
     def _prov(self) -> str:
         return self.provider.currentData()
@@ -149,6 +166,9 @@ class SettingsDialog(QDialog):
              "OpenRouter è un servizio a pagamento che dà accesso a molti modelli AI: "
              "crea la chiave su openrouter.ai. ") if orr else
             ("Serve solo per capire le istruzioni scritte a parole e per suggerire la luce. "))
+        if orr:
+            self.info.setText(self.info.text() + "Il ritocco AI finale (facoltativo, sperimentale) usa un modello che "
+                              "lavora sulle immagini ed è a pagamento. ")
         self.info.setText(self.info.text() + "Senza chiave Arloc funziona lo stesso, con i cursori.")
         self.key.blockSignals(True)
         self.key.setText(self._typed.get(p, ""))
@@ -157,7 +177,7 @@ class SettingsDialog(QDialog):
             "Chiave già salvata (scrivine una nuova per sostituirla)" if self._had_key(p)
             else "Incolla qui la chiave di OpenRouter" if orr else "Incolla qui la chiave di Claude")
         self.lbl_verify.setText("")
-        for i, vis in enumerate((not orr, not orr, orr, orr)):
+        for i, vis in enumerate((not orr, not orr, orr, orr, orr)):
             self._af.setRowVisible(i, vis)
         self._fit_height()
 
@@ -184,8 +204,12 @@ class SettingsDialog(QDialog):
 
     def _fit_height(self):
         # adjustSize() limita a 2/3 dello schermo e comprime i campi: usa l'altezza necessaria
-        self.layout().activate()
-        h = self.layout().totalSizeHint().height()
+        # (se non entra nello schermo, il contenuto scorre)
+        lay = self._body.layout()
+        lay.activate()
+        w = max(self.width(), 480)
+        h = max(lay.totalSizeHint().height(), lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else 0)
+        h += 52   # riga dei pulsanti
         scr = self.screen().availableGeometry().height() if self.screen() else h
         self.resize(self.width(), min(h, scr - 40))
 
@@ -200,29 +224,56 @@ class SettingsDialog(QDialog):
             return self._typed[p].strip()
         return self._stored_key(p)
 
+    def _models_snapshot(self):
+        """Impostazioni con i modelli scritti nei campi (anche se non ancora salvati)."""
+        import dataclasses
+        s = self._s
+        if s is None:
+            from arloc.core.settings import Settings
+            s = Settings()
+        vals = {"provider": self._prov()}
+        for attr, w in (("model_instructions", self.m_instr), ("model_light", self.m_light),
+                        ("openrouter_model_instructions", self.o_instr), ("openrouter_model_light", self.o_light),
+                        ("openrouter_model_retouch", self.o_retouch)):
+            if w.text().strip():
+                vals[attr] = w.text().strip()
+        return dataclasses.replace(s, **vals)
+
     def _verify(self):
         key = self._current_key()
         prov = self._prov()
         if not key:
-            self._show_verify(False, "Inserisci prima la chiave.")
+            self._show_verify(False, "Inserisci prima la chiave.", [])
             return
         self.btn_verify.setEnabled(False)
         self.lbl_verify.setText("Controllo in corso…")
         self.lbl_verify.setProperty("state", "")
+        snap = self._models_snapshot()
 
         def work():
-            from arloc.core.instructions import verify_api_key
-            return verify_api_key(key, prov)
+            from arloc.core.instructions import check_models, verify_api_key
+            ok, msg = verify_api_key(key, prov)
+            return ok, msg, (check_models(snap, key) if ok else [])
 
-        run_async(work, lambda r: self._verified.emit(bool(r[0]), str(r[1])),
-                  lambda e: self._verified.emit(False, friendly_error(e)))
+        run_async(work, lambda r: self._verified.emit(bool(r[0]), str(r[1]), list(r[2])),
+                  lambda e: self._verified.emit(False, friendly_error(e), []))
 
-    def _show_verify(self, ok: bool, msg: str):
+    _ICONS = {"ok": ("✓", "#1F7A6D"), "warn": ("⚠", "#B3612C"), "error": ("✗", "#A8321F")}
+
+    def _show_verify(self, ok: bool, msg: str, models=()):
+        from html import escape
         self.btn_verify.setEnabled(True)
-        self.lbl_verify.setText(("✓ " if ok else "") + msg)
-        self.lbl_verify.setProperty("state", "ok" if ok else "todo")
+        rows = [("ok" if ok else "error", ("Chiave: " + msg) if models or ok else msg)]
+        rows += [(lvl, text) for _role, lvl, text in models]
+        parts = []
+        for lvl, text in rows:
+            icon, col = self._ICONS.get(lvl, self._ICONS["warn"])
+            parts.append(f'<span style="color:{col}">{icon}</span> {escape(text)}')
+        self.lbl_verify.setText("<br>".join(parts))
+        self.lbl_verify.setProperty("state", "")
         self.lbl_verify.style().unpolish(self.lbl_verify)
         self.lbl_verify.style().polish(self.lbl_verify)
+        self._fit_height()
 
     def _accept(self):
         s = self._s
@@ -233,7 +284,8 @@ class SettingsDialog(QDialog):
                                                self.cf.currentText().lower(), self.cq.value())
                 s.provider = self._prov()
                 for attr, w in (("openrouter_model_instructions", self.o_instr),
-                                ("openrouter_model_light", self.o_light)):
+                                ("openrouter_model_light", self.o_light),
+                                ("openrouter_model_retouch", self.o_retouch)):
                     if w.text().strip():
                         setattr(s, attr, w.text().strip())
                 if self.m_instr.text().strip():

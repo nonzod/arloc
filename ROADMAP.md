@@ -12,6 +12,7 @@ Dettagli tecnici di ogni milestone in [IMPLEMENTAZIONE.md](IMPLEMENTAZIONE.md) Â
 - [x] Ricerca dell'area verde
 - [x] Ritaglio automatico del mosaico e raddrizzamento
 - [x] Scala reale (px/cm) e posizionamento in prospettiva
+- [x] Misure automatiche: il mosaico riempie l'area senza misure in cm (UI, CLI, batch)
 - [x] Ombra proiettata, ombra di contatto, spessore
 - [x] Adattamento luce/colore, riempimento del verde residuo
 - [x] Preset Shopify / Etsy / Custom ed export
@@ -46,6 +47,11 @@ Dettagli tecnici di ogni milestone in [IMPLEMENTAZIONE.md](IMPLEMENTAZIONE.md) Â
 - [x] OpenRouter come servizio alternativo (selettore nelle Impostazioni, chiave separata)
 - [ ] Prova con chiave API reale, Anthropic e OpenRouter (finora solo test simulati)
 
+## M4b: Verifica modelli e ritocco AI (sperimentale)
+- [x] "Verifica" controlla anche i modelli configurati (esistenza, tipo di modello, suggerimenti)
+- [x] Ritocco AI finale con modello generativo di immagini (OpenRouter), con protezione del mosaico, interruttore UI, batch `ritocco_ai`, CLI `--ritocco-ai`
+- [ ] Prova con chiave OpenRouter reale: formato della risposta (`message.images`), costo effettivo e qualitÃ  del ritocco
+
 ## M5: Distribuzione
 - [x] Build PyInstaller Linux verificato (GUI, CLI compose, batch dall'eseguibile; ~500 MB, ~200 MB compresso)
 - [x] Icona dell'app (`packaging/make_icon.py`)
@@ -59,7 +65,6 @@ Dettagli tecnici di ogni milestone in [IMPLEMENTAZIONE.md](IMPLEMENTAZIONE.md) Â
 - [ ] Scontorno: su M11 include un po' di intonaco scuro a sinistra; sul vetro S108 la cornice dorata a destra puÃ² restare fuori (si corregge col pennello)
 
 ## Idee future
-- Armonizzazione con un modello generativo di immagini (es. Gemini Image, FLUX Kontext) come passo finale opzionale
 - Installer Windows (Inno Setup) e firma dell'app macOS
 - PiÃ¹ mosaici nella stessa immagine
 - Altri preset (Amazon, Instagram)

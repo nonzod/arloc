@@ -43,8 +43,8 @@ Una foto frontale, il più possibile dritta. Va bene anche se si vedono il nastr
 
 Segui i passi numerati a sinistra:
 
-1. **Sfondo**: scegli l'immagine e scrivi la sua larghezza reale in cm. Se non c'è il rettangolo verde, clicca i 4 angoli della zona.
-2. **Mosaico**: scegli l'immagine e scrivi larghezza e altezza reali in cm. Controlla il ritaglio nella vista "Mosaico".
+1. **Sfondo**: scegli l'immagine. Se non c'è il rettangolo verde, clicca i 4 angoli della zona.
+2. **Mosaico**: scegli l'immagine e controlla il ritaglio nella vista "Mosaico". Con **Misure: Automatiche** (consigliato per cominciare) il mosaico riempie lo spazio indicato sullo sfondo, senza scrivere nulla; con **Reali (cm)** scrivi la larghezza reale dello sfondo e le misure del mosaico per una scala più precisa.
 3. **Istruzioni** (facoltativo): scrivi a parole cosa vuoi, ad esempio:
    - *"ombra morbida verso destra"*
    - *"ruota il mosaico di 10 gradi"*
@@ -71,14 +71,16 @@ Segui i passi numerati a sinistra:
 |---|---|---|
 | sfondo | percorso della foto di sfondo | `sfondi/MARMO 1.png` |
 | mosaico | percorso della foto del mosaico | `mosaici/M30.jpg` |
-| larghezza_sfondo_cm | larghezza reale dello sfondo | `120` |
-| larghezza_mosaico_cm | larghezza reale del mosaico | `30` |
-| altezza_mosaico_cm | altezza reale del mosaico | `20` |
+| larghezza_sfondo_cm | *(facoltativo)* larghezza reale dello sfondo | `120` |
+| larghezza_mosaico_cm | *(facoltativo)* larghezza reale del mosaico | `30` |
+| altezza_mosaico_cm | *(facoltativo)* altezza reale del mosaico | `20` |
+| misure | *(facoltativo)* `automatiche` o `reali`. Se le tre misure in cm sono vuote il mosaico riempie l'area; se le compili tutte si usa la scala reale (compilarne solo alcune dà errore) | `automatiche` |
 | area | *(facoltativo)* i 4 angoli in pixel; vuoto se c'è il rettangolo verde | `812,540;1310,540;1310,880;812,880` |
 | istruzioni | *(facoltativo)* come nella modalità singola | `ombra verso sinistra` |
 | preset | *(facoltativo)* `shopify`, `etsy` oppure `custom 1600x1200 png` | `etsy` |
 | nome_output | *(facoltativo)* nome del file da creare | `M30_marmo` |
 | scontorno | *(facoltativo)* `auto` (di solito va bene), `rettangolo` oppure `forma` (segue il bordo reale del mosaico) | `forma` |
+| ritocco_ai | *(facoltativo)* `sì` per il ritocco AI finale (sperimentale, a pagamento, serve OpenRouter); vuoto = no | `sì` |
 
    I percorsi possono partire dalla cartella in cui si trova il file Excel.
 3. Trascina il file in Arloc (oppure **Scegli file…**), scegli la cartella dei risultati e premi **Avvia**.
@@ -93,12 +95,20 @@ Per capire le istruzioni scritte, Arloc usa l'intelligenza artificiale Claude, d
 2. Scegli il **Servizio AI** (Anthropic o OpenRouter).
 3. Incolla la **chiave API** che ti è stata fornita per quel servizio e premi **Verifica**.
 
+Premendo **Verifica** Arloc controlla anche che i modelli scritti in "Modelli avanzati" esistano e siano adatti, e ti dice cosa correggere (✓ va bene, ⚠ funziona ma con riserve, ✗ da cambiare).
+
 Senza chiave Arloc funziona lo stesso: per le regolazioni usi i cursori.
+
+---
+
+## Ritocco AI finale (sperimentale)
+
+Nel passo **Istruzioni** puoi attivare **Ritocco AI finale**: un modello di intelligenza artificiale armonizza luce, ombre e colori attorno al mosaico. Funziona solo con OpenRouter, è a pagamento (circa 0,07 $ a immagine, la stima compare accanto all'interruttore) e si applica solo quando premi **GENERA** o **Salva**, non nell'anteprima. Il mosaico non viene mai ridisegnato: le sue tessere restano quelle originali. Se il ritocco sposta l'immagine o non riesce, Arloc tiene il risultato senza ritocco e te lo dice. Nella vista Risultato il pulsante **Senza ritocco AI** permette di confrontare. Da riga di comando: `--ritocco-ai`.
 
 ---
 
 ## Problemi frequenti
 
 - **"Non trovo il rettangolo verde"**: controlla che il verde sia proprio #00FF00 e che la foto sia salvata in PNG. In alternativa clicca i 4 angoli.
-- **Il mosaico è troppo grande o piccolo**: controlla la larghezza reale dello sfondo e le misure del mosaico.
+- **Il mosaico è troppo grande o piccolo**: controlla la larghezza reale dello sfondo e le misure del mosaico, oppure passa alle misure automatiche e regola "Riempimento area" nelle Regolazioni avanzate.
 - **Il ritaglio del mosaico è sbagliato**: nella vista "Mosaico" trascina i 4 angoli nella posizione corretta.

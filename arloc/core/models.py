@@ -42,6 +42,7 @@ class ComposeParams:
     temperatura: float = 0.0
     armonizzazione: float = 0.3
     grana: float = 0.0
+    riempimento: float = 0.92  # solo misure automatiche: quanto dello spazio dell'area occupa il mosaico
 
     # (min, max) per ogni campo: usato per clamp, cursori UI e JSON schema
     RANGES = {
@@ -57,6 +58,7 @@ class ComposeParams:
         "temperatura": (-0.5, 0.5),
         "armonizzazione": (0.0, 1.0),
         "grana": (0.0, 1.0),
+        "riempimento": (0.5, 1.0),
     }
 
     def clamped(self) -> "ComposeParams":
@@ -90,9 +92,9 @@ class Job:
     """Tutto ciò che serve per generare un'immagine."""
     sfondo: Path
     mosaico: Path
-    larghezza_sfondo_cm: float
-    larghezza_mosaico_cm: float
-    altezza_mosaico_cm: float
+    larghezza_sfondo_cm: float = 0.0   # 0 = non indicata (ok solo con misure automatiche)
+    larghezza_mosaico_cm: float = 0.0
+    altezza_mosaico_cm: float = 0.0
     area: Quad | None = None          # None = cerca il rettangolo verde
     mosaico_quad: Quad | None = None  # None = ritaglio automatico
     istruzioni: str = ""
@@ -100,7 +102,9 @@ class Job:
     preset: OutputPreset | None = None
     nome_output: str | None = None
     scontorno: str = "auto"                      # "auto" | "rettangolo" | "forma"
+    misure: str = "reali"                        # "reali" (cm obbligatori) | "automatiche" (il mosaico riempie l'area, senza cm)
     mosaico_maschera: np.ndarray | None = None   # maschera uint8 0/255 (anche a risoluzione ridotta) dopo i ritocchi; None = automatica
+    ritocco_ai: bool = False                     # ritocco AI finale (sperimentale, solo OpenRouter), applicato dal chiamante
 
 
 @dataclass
@@ -109,6 +113,7 @@ class ComposeResult:
     center: Point                     # centro del mosaico nell'immagine risultante, in px
     mosaic_quad: Quad                 # dove è finito il mosaico nell'immagine risultante
     warnings: list[str] = field(default_factory=list)  # messaggi in italiano per l'utente
+    mosaic_mask: np.ndarray | None = None  # uint8 0/255, dimensioni di `image`: dove sta il mosaico nell'immagine finale
 
 
 class ArlocError(Exception):

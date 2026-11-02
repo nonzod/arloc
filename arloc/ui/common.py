@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QLineEdit, QPlainTextEdit, QTextEdit
 from PySide6.QtGui import QImage, QPixmap
 
@@ -121,10 +121,13 @@ class _PlaceholderFilter(QObject):
     def _hide(self, obj):
         w = self._owner(obj)
         if isinstance(w, QAbstractSpinBox):
-            if w.specialValueText() and w.value() == w.minimum():
+            empty = bool(w.specialValueText()) and w.value() == w.minimum()
+            if empty:
                 w.setProperty(self._KEY, w.specialValueText())
                 w.setSpecialValueText("")
-                w.lineEdit().selectAll()
+            # rimandato: il click del mouse arriva dopo il FocusIn e sposterebbe il cursore.
+            # Campo "vuoto" → niente "0,0" da cancellare; valore presente → selezionato, si sovrascrive.
+            QTimer.singleShot(0, (lambda: w.lineEdit().setText("")) if empty else w.selectAll)
         elif isinstance(w, (QLineEdit, QPlainTextEdit, QTextEdit)) and w.placeholderText():
             w.setProperty(self._KEY, w.placeholderText())
             w.setPlaceholderText("")

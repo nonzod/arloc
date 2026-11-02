@@ -10,9 +10,10 @@ from pathlib import Path
 
 from .models import ArlocError, ComposeParams, Job, OutputPreset
 
-REQUIRED = ["sfondo", "mosaico", "larghezza_sfondo_cm", "larghezza_mosaico_cm", "altezza_mosaico_cm"]
-OPTIONAL = ["area", "istruzioni", "preset", "nome_output", "scontorno"]
-COLUMNS = REQUIRED + OPTIONAL
+REQUIRED = ["sfondo", "mosaico"]
+CM_COLUMNS = ["larghezza_sfondo_cm", "larghezza_mosaico_cm", "altezza_mosaico_cm"]
+OPTIONAL = ["area", "istruzioni", "preset", "nome_output", "scontorno", "misure", "ritocco_ai"]
+COLUMNS = REQUIRED + CM_COLUMNS + OPTIONAL
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
 
 
@@ -103,9 +104,20 @@ def _build_job(raw: dict, base: Path, default_preset: OutputPreset) -> Job:
     from . import geometry, presets
     sfondo = _resolve(raw.get("sfondo", ""), base, "sfondo")
     mosaico = _resolve(raw.get("mosaico", ""), base, "mosaico")
-    lbg = _num(raw.get("larghezza_sfondo_cm", ""), "larghezza_sfondo_cm")
-    lm = _num(raw.get("larghezza_mosaico_cm", ""), "larghezza_mosaico_cm")
-    hm = _num(raw.get("altezza_mosaico_cm", ""), "altezza_mosaico_cm")
+    filled = [c for c in CM_COLUMNS if raw.get(c, "").strip()]
+    misure = raw.get("misure", "").strip().lower()
+    if misure and misure not in ("reali", "automatiche"):
+        raise ArlocError(f"«misure» deve essere reali o automatiche: {raw.get('misure')!r}.")
+    if not misure:
+        if filled and len(filled) < len(CM_COLUMNS):
+            mancano = ", ".join(c for c in CM_COLUMNS if c not in filled)
+            raise ArlocError(f"Misure incomplete: compila anche {mancano}, oppure lascia vuote tutte e tre per le misure automatiche.")
+        misure = "reali" if filled else "automatiche"
+    lbg = lm = hm = 0.0
+    if misure == "reali":
+        lbg = _num(raw.get("larghezza_sfondo_cm", ""), "larghezza_sfondo_cm")
+        lm = _num(raw.get("larghezza_mosaico_cm", ""), "larghezza_mosaico_cm")
+        hm = _num(raw.get("altezza_mosaico_cm", ""), "altezza_mosaico_cm")
     area = geometry.parse_area(raw["area"]) if raw.get("area") else None
     preset = presets.parse_preset(raw["preset"]) if raw.get("preset") else default_preset
     nome = raw.get("nome_output") or f"{mosaico.stem}_{sfondo.stem}"
@@ -113,9 +125,16 @@ def _build_job(raw: dict, base: Path, default_preset: OutputPreset) -> Job:
     scontorno = raw.get("scontorno", "").strip().lower() or "auto"
     if scontorno not in ("auto", "rettangolo", "forma"):
         raise ArlocError(f"«scontorno» deve essere auto, rettangolo o forma: {raw.get('scontorno')!r}.")
+    ritocco = raw.get("ritocco_ai", "").strip().lower()
+    if ritocco in ("", "no", "n", "0", "false"):
+        ritocco_ai = False
+    elif ritocco in ("sì", "si", "s", "yes", "y", "1", "true"):
+        ritocco_ai = True
+    else:
+        raise ArlocError(f"«ritocco_ai» deve essere sì o no (o vuoto): {raw.get('ritocco_ai')!r}.")
     return Job(sfondo=sfondo, mosaico=mosaico, larghezza_sfondo_cm=lbg, larghezza_mosaico_cm=lm,
                altezza_mosaico_cm=hm, area=area, istruzioni=raw.get("istruzioni", ""),
-               preset=preset, nome_output=nome, scontorno=scontorno)
+               preset=preset, nome_output=nome, scontorno=scontorno, misure=misure, ritocco_ai=ritocco_ai)
 
 
 def run_batch(rows, out_dir, progress=None, should_stop=None, use_claude=True) -> Path:
@@ -140,6 +159,12 @@ def run_batch(rows, out_dir, progress=None, should_stop=None, use_claude=True) -
                     if warn:
                         warns.append(warn)
                 result = _compose.compose(job)
+                if job.ritocco_ai:
+                    from .harmonize import harmonize
+                    img, warn = harmonize(result, result.mosaic_mask)
+                    result.image = img
+                    if warn:
+                        warns.append(warn)
                 name, k = job.nome_output, 2
                 while name.lower() in used:
                     name, k = f"{job.nome_output}_{k}", k + 1
@@ -187,9 +212,11 @@ def write_template(path) -> Path:
 
 _EXAMPLE_ROWS = [
     ["../examples/sfondi/MARMO 1.jpg", "../examples/mosaici/M21.png", "120", "30", "20", "",
-     "ombra morbida verso destra", "shopify", "M21_marmo1", ""],
+     "ombra morbida verso destra", "shopify", "M21_marmo1", "", "", ""],
     ["../examples/sfondi/CERAMICA 1.jpg", "../examples/mosaici/P41.jpg", "100", "25,5", "25", "",
-     "", "etsy", "", ""],
+     "", "etsy", "", "", "", ""],
+    ["../examples/sfondi/VETRO 1.jpg", "../examples/mosaici/RIFERIMENTO_vetro_S108.jpg", "", "", "",
+     "557,267;1037,267;1037,867;557,867", "", "shopify", "", "", "", ""],
 ]
 
 

@@ -27,6 +27,8 @@ class Settings:
     provider: str = "anthropic"  # "anthropic" | "openrouter"
     openrouter_model_instructions: str = "anthropic/claude-haiku-5.5"
     openrouter_model_light: str = "anthropic/claude-sonnet-5.5"
+    # ritocco AI finale (sperimentale, solo OpenRouter): modello che riceve e restituisce immagini
+    openrouter_model_retouch: str = "google/gemini-3.1-flash-image"
     last_dirs: dict = field(default_factory=dict)
 
 
@@ -43,7 +45,7 @@ def load_settings() -> Settings:
     if not isinstance(data, dict):
         return s
     for k in ("output_dir", "default_preset", "model_instructions", "model_light",
-              "provider", "openrouter_model_instructions", "openrouter_model_light"):
+              "provider", "openrouter_model_instructions", "openrouter_model_light", "openrouter_model_retouch"):
         if isinstance(data.get(k), str) and data[k]:
             setattr(s, k, data[k])
     if s.provider not in ("anthropic", "openrouter"):
