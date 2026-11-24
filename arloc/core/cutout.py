@@ -6,6 +6,7 @@ import numpy as np
 
 from .detect import _quad_from_contour, texture_mask
 from .geometry import order_quad
+from .imageio import downscale
 from .models import Quad
 
 WORK_SIZE = 1000          # lato lungo della copia di lavoro
@@ -115,12 +116,10 @@ def cutout_mosaic(img: np.ndarray, quad: Quad | None = None) -> np.ndarray:
     H, W = img.shape[:2]
     if has_alpha(img):
         a = (img[:, :, 3] > 127).astype(np.uint8) * 255
-        s = min(1.0, WORK_SIZE / max(W, H))
-        sm = cv2.resize(a, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else a
+        sm, _ = downscale(a, WORK_SIZE)
         sm = _clean((sm > 127).astype(np.uint8) * 255, max(3, int(0.004 * max(sm.shape))))
         return _soft_up(sm, (W, H))
-    s = min(1.0, WORK_SIZE / max(W, H))
-    small = cv2.resize(img[:, :, :3], None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else img[:, :, :3]
+    small, s = downscale(img[:, :, :3], WORK_SIZE)
     q = order_quad(quad.as_array()).as_array() * s if quad is not None else None
     m = _grabcut(small, q)
     m = _clean(m, max(5, int(0.008 * max(small.shape[:2]))))

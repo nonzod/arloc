@@ -59,12 +59,22 @@ Dettagli tecnici di ogni milestone in [IMPLEMENTAZIONE.md](IMPLEMENTAZIONE.md) �
 - [ ] GitHub Actions su tag `v*` — workflow scritto, mai eseguito
 - [ ] Prova su macchine pulite
 
+## M6: Refactoring e velocità
+- [x] Servizi AI dietro un'unica interfaccia (`core/ai.py`), errori tradotti in un solo punto, client riusati
+- [x] Cache su disco unica (`core/cache.py`), un file per risposta e limite di dimensione
+- [x] Sequenza istruzioni → composizione → ritocco in un solo punto (`core/pipeline.py`) per GUI, batch e CLI
+- [x] Anteprima più veloce: sfondo, mosaico e verde in memoria, effetti solo sulla zona del mosaico, anello di armonizzazione con `distanceTransform`
+- [ ] Prova manuale della GUI con mouse dopo il refactoring (cursori, Suggerisci luce, Genera con ritocco AI)
+
 ## Da migliorare
 - [ ] Ombra più marcata / meno effetto "incollato" (tarare i default su più sfondi)
 - [ ] Ritaglio automatico: a volte taglia ~1% di tessere sul bordo
 - [ ] Scontorno: su M11 include un po' di intonaco scuro a sinistra; sul vetro S108 la cornice dorata a destra può restare fuori (si corregge col pennello)
 
 ## Idee future
+- Dividere `ui/main_window.py` (quasi 900 righe) in controller e vista
+- Raddrizzare il mosaico direttamente alla dimensione finale (oggi ~20 ms in anteprima: guadagno piccolo, da rivalutare con mosaici molto grandi)
+- Batch API di Anthropic per i batch lunghi (−50 % sul costo, risultati non immediati)
 - Installer Windows (Inno Setup) e firma dell'app macOS
 - Più mosaici nella stessa immagine
 - Altri preset (Amazon, Instagram)

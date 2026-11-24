@@ -3,7 +3,7 @@ import types
 
 import pytest
 
-from arloc.core import instructions, settings
+from arloc.core import ai, instructions, settings
 from arloc.core.models import ComposeParams
 
 
@@ -24,7 +24,7 @@ def fake(monkeypatch, text, stop="end_turn", counter=None):
                 if counter is not None:
                     counter.append(kw)
                 return types.SimpleNamespace(stop_reason=stop, content=[types.SimpleNamespace(type="text", text=text)])
-    monkeypatch.setattr(instructions, "_client", lambda key=None: C)
+    monkeypatch.setattr(ai, "_anthropic_client", lambda key=None: C)
 
 
 def test_parse_ok_clamp_and_cache(monkeypatch):
@@ -102,7 +102,7 @@ def fake_post(monkeypatch, responses, calls=None):
         if isinstance(r, Exception):
             raise r
         return r
-    monkeypatch.setattr(instructions.httpx, "post", post)
+    monkeypatch.setattr(ai._http, "post", post)
 
 
 def test_openrouter_ok_and_cache(monkeypatch, orr):
@@ -132,7 +132,7 @@ def test_openrouter_errors(monkeypatch, orr):
     fake_post(monkeypatch, [_Resp(402, {"error": {"message": "credits"}})])
     p, w = instructions.parse_instructions("b", ComposeParams())
     assert "Credito" in w
-    fake_post(monkeypatch, [instructions.httpx.ReadTimeout("t")])
+    fake_post(monkeypatch, [ai.httpx.ReadTimeout("t")])
     p, w = instructions.parse_instructions("c", ComposeParams())
     assert "tempo scaduto" in w
 
@@ -152,9 +152,9 @@ def test_openrouter_no_key_and_light(monkeypatch, orr):
 
 
 def test_openrouter_verify(monkeypatch, orr):
-    monkeypatch.setattr(instructions.httpx, "get", lambda url, headers=None, timeout=None: _Resp(401, {}))
+    monkeypatch.setattr(ai._http, "get", lambda url, headers=None, timeout=None: _Resp(401, {}))
     assert instructions.verify_api_key("k")[0] is False
-    monkeypatch.setattr(instructions.httpx, "get", lambda url, headers=None, timeout=None: _Resp(200, {}))
+    monkeypatch.setattr(ai._http, "get", lambda url, headers=None, timeout=None: _Resp(200, {}))
     assert instructions.verify_api_key("k")[0] is True
 
 
@@ -164,3 +164,32 @@ def test_settings_backcompat(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "_config_path", lambda: f)
     s = settings.load_settings()
     assert s.provider == "anthropic" and s.openrouter_model_light == "anthropic/claude-sonnet-5.5"
+
+
+def test_openrouter_skips_schema_when_model_lacks_it(monkeypatch, orr):
+    monkeypatch.setattr(ai, "_MODELS_CACHE", {"anthropic/claude-haiku-5.5": {"supported_parameters": ["max_tokens"]}})
+    calls = []
+    fake_post(monkeypatch, [_ok('{"grana": 0.2}')], calls)
+    p, w = instructions.parse_instructions("un po' di grana", ComposeParams())
+    assert w is None and p.grana == 0.2
+    assert len(calls) == 1 and "response_format" not in calls[0]
+
+
+def test_error_messages_per_context():
+    o, a = ai.provider_for("openrouter"), ai.provider_for("anthropic")
+    e = ai.AIError("not_found", "x/y")
+    assert ai.message(e, o, "instructions").endswith("Uso i parametri attuali.") and "«x/y»" in ai.message(e, o, "light")
+    assert ai.message(ai.AIError("credit"), o, "retouch").startswith("Ritocco AI non eseguito: credito OpenRouter")
+    assert ai.message(ai.AIError("timeout"), o, "retouch") == "Ritocco AI non eseguito: OpenRouter non risponde (tempo scaduto)."
+    assert "Anthropic" in ai.message(ai.AIError("not_found", "m"), a, "instructions")
+    assert ai.message(ai.httpx.ConnectTimeout("t"), o, "light").startswith("OpenRouter non risponde")
+
+
+def test_anthropic_typed_errors():
+    import anthropic
+    req = ai.httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    a = ai.provider_for("anthropic")
+    err = anthropic.RateLimitError("r", response=ai.httpx.Response(429, request=req), body=None)
+    assert a.to_error(err).kind == "rate"
+    assert a.to_error(anthropic.APITimeoutError(request=req)).kind == "timeout"
+    assert a.to_error(RuntimeError("x")).kind == "other"

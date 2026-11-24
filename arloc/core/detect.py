@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 
 from .geometry import order_quad
+from .imageio import downscale
 from .models import Quad
 
 GREEN_LO = (50, 150, 150)   # H (0-180), S, V
@@ -71,8 +72,7 @@ def find_mosaic_corners(img: np.ndarray) -> Quad:
     """Angoli del mosaico (esclude nastro/bordo bianco). Fallback: immagine intera."""
     H, W = img.shape[:2]
     full = _full_quad(W, H)
-    s = min(1.0, 1200 / max(W, H))
-    small = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else img
+    small, s = downscale(img, 1200)
     h, w = small.shape[:2]
 
     # PNG con trasparenza: la maschera è il canale alpha

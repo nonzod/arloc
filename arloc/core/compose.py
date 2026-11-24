@@ -1,6 +1,9 @@
 """Composizione: mosaico raddrizzato, posizionato in prospettiva sullo sfondo."""
 from __future__ import annotations
 
+import math
+from functools import lru_cache
+
 import cv2
 import numpy as np
 
@@ -8,7 +11,7 @@ from . import effects
 from .cutout import cutout_mosaic, inset_quad, quad_from_mask, use_shape
 from .detect import find_green_area, find_mosaic_corners
 from .geometry import auto_mosaic_size, order_quad, placement_quad, plane_size, px_per_cm
-from .imageio import load_image
+from .imageio import downscale, file_key, load_image_cached
 from .models import ArlocError, ComposeResult, Job, Quad
 
 MAX_RECT_PX = 4000  # lato massimo del mosaico raddrizzato
@@ -34,11 +37,34 @@ def rectify_mosaic(img: np.ndarray, quad: Quad, w_cm: float, h_cm: float) -> np.
                                borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
 
 
-def _resize_to_long_side(img: np.ndarray, long_side: int) -> tuple[np.ndarray, float]:
-    s = long_side / max(img.shape[:2])
-    if s >= 1:
-        return img, 1.0
-    return cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), s
+@lru_cache(maxsize=4)
+def _green_cached(key: tuple[str, int, int]):
+    """Rettangolo verde dello sfondo (a piena risoluzione), calcolato una volta per file."""
+    found = find_green_area(_load_bg(key))
+    if found is not None:
+        found[1].flags.writeable = False
+    return found
+
+
+def _load_bg(key) -> np.ndarray:
+    return load_image_cached(key[0])[:, :, :3]
+
+
+def _effects_roi(alpha: np.ndarray, params, ppc: float) -> tuple[slice, slice]:
+    """Riquadro del mosaico più il margine dove arrivano ombre, spessore e anello di armonizzazione.
+
+    Il margine copre tutto il supporto dei filtri (i kernel gaussiani di OpenCV arrivano a 4 sigma):
+    fuori dal riquadro il risultato sarebbe identico allo sfondo.
+    """
+    H, W = alpha.shape
+    x, y, w, h = cv2.boundingRect((alpha > 0).astype(np.uint8))
+    sigma = ppc * (0.05 + 0.35 * params.ombra_morbidezza)
+    shadow = params.ombra_distanza_cm * ppc + 4 * max(sigma * 1.6, 0.3) + 2   # sfocatura più larga dell'ombra
+    contact = 4 * max(1.0, ppc * 0.05) + 3
+    thick = min(params.spessore_mm / 10.0 * ppc * 0.5, 12.0) + 2
+    ring = 0.15 * math.sqrt(float((alpha > 0.5).sum())) + 3 if params.armonizzazione > 0 else 0
+    m = int(math.ceil(max(shadow, contact, thick, ring))) + 2
+    return slice(max(0, y - m), min(H, y + h + m)), slice(max(0, x - m), min(W, x + w + m))
 
 
 def _apply_cutout(job: Job, mosaic: np.ndarray) -> tuple[np.ndarray, Quad]:
@@ -67,12 +93,13 @@ def compose(job: Job, preview_max: int | None = None) -> ComposeResult:
     if not auto and min(job.larghezza_sfondo_cm or 0, job.larghezza_mosaico_cm or 0, job.altezza_mosaico_cm or 0) <= 0:
         raise ArlocError("Mancano le misure in cm: indicale oppure scegli le misure automatiche.")
 
-    bg = load_image(job.sfondo)[:, :, :3]
-    mosaic = load_image(job.mosaico)
+    bg_key = file_key(job.sfondo)
+    bg = _load_bg(bg_key)                      # in sola lettura (cache): non va modificato sul posto
+    mosaic = load_image_cached(job.mosaico)
 
     # 1. area di destinazione (sulle dimensioni originali dello sfondo)
     green_mask = None
-    found = find_green_area(bg)
+    found = _green_cached(bg_key)
     if job.area is not None:
         area = order_quad(job.area.as_array())
         # il verde si ricostruisce solo se sta dentro l'area indicata
@@ -89,7 +116,7 @@ def compose(job: Job, preview_max: int | None = None) -> ComposeResult:
     # anteprima veloce: tutto in scala ridotta
     s = 1.0
     if preview_max:
-        bg, s = _resize_to_long_side(bg, preview_max)
+        bg, s = downscale(bg, preview_max)
         if s < 1:
             area = Quad.from_array(area.as_array() * s)
             if green_mask is not None:
@@ -129,25 +156,29 @@ def compose(job: Job, preview_max: int | None = None) -> ComposeResult:
     rect[:, :, 3] = cv2.erode(rect[:, :, 3], np.ones((3, 3), np.uint8))
     warped = cv2.warpPerspective(rect, M, (W, H), flags=cv2.INTER_LINEAR,
                                  borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
-    mosaic_px = warped[:, :, :3].astype(np.float32)
     alpha = warped[:, :, 3].astype(np.float32) / 255
     alpha = cv2.GaussianBlur(alpha, (0, 0), 0.7)
 
     if alpha.max() < 0.5:
         raise ArlocError("Il mosaico cade fuori dall'immagine: controlla area e spostamento.")
 
-    # 5. effetti
+    # 5. effetti: il verde a piena immagine, il resto solo nella zona del mosaico (fuori non cambia nulla)
     base, frac = effects.fill_green(bg, green_mask, alpha)
     if frac > 0.02:
         warnings.append("Resta del verde scoperto attorno al mosaico: è stato ricostruito, ma su sfondi con venature può vedersi.")
-    base = base.astype(np.float32)
-    mosaic_px = effects.harmonize(mosaic_px, alpha, base, params)
-    mosaic_px = effects.add_grain(mosaic_px, alpha, base, params)
-    shaded = effects.apply_shadows(base, alpha, params, ppc)
-    shaded = effects.apply_thickness(shaded, mosaic_px, alpha, params, ppc)
+    roi = _effects_roi(alpha, params, ppc)
+    a = alpha[roi]
+    b = base[roi].astype(np.float32)
+    mosaic_px = warped[roi][:, :, :3].astype(np.float32)
+    mosaic_px = effects.harmonize(mosaic_px, a, b, params)
+    sigma = effects.grain_sigma(base, alpha) if params.grana > 0 else 0.0   # livello dall'intero sfondo
+    mosaic_px = effects.add_grain(mosaic_px, a, b, params, sigma)
+    shaded = effects.apply_shadows(b, a, params, ppc)
+    shaded = effects.apply_thickness(shaded, mosaic_px, a, params, ppc)
 
-    a3 = alpha[:, :, None]
-    out = np.clip(shaded * (1 - a3) + mosaic_px * a3, 0, 255).astype(np.uint8)
+    a3 = a[:, :, None]
+    out = np.array(base, dtype=np.uint8, copy=True)
+    out[roi] = np.clip(shaded * (1 - a3) + mosaic_px * a3, 0, 255).astype(np.uint8)
 
     d = dest.as_array()
     mosaic_mask = np.where(alpha > 0.5, 255, 0).astype(np.uint8)

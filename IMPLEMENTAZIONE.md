@@ -75,7 +75,11 @@ arloc/
       geometry.py        # order_quad(), px_per_cm(), placement_quad()
       compose.py         # compose(job) -> immagine PIL
       effects.py         # ombre, spessore, adattamento colore, inpaint del verde residuo
-      instructions.py    # parse_instructions(), suggest_light() via Claude, con cache
+      pipeline.py        # istruzioni -> compose -> ritocco AI: la sequenza usata da GUI, batch e CLI
+      ai.py              # servizi AI (Anthropic, OpenRouter) con un'unica interfaccia, errori in italiano
+      cache.py           # DiskCache: risposte AI su disco, un file per chiave, solo le più recenti
+      instructions.py    # parse_instructions(), suggest_light(), verifica chiave e modelli
+      harmonize.py       # ritocco AI finale (sperimentale)
       presets.py         # Shopify / Etsy / Custom + export
       batch.py           # read_batch(), run_batch() -> report
       settings.py        # impostazioni utente + keyring
@@ -94,7 +98,7 @@ arloc/
   packaging/             # spec PyInstaller, icone, script AppImage
 ```
 
-Regola d'oro: **tutta la logica sta in `core/`**. Interfaccia, batch e CLI chiamano la stessa funzione `compose(job)`. In questo modo ogni cosa che funziona da riga di comando funziona anche nella GUI.
+Regola d'oro: **tutta la logica sta in `core/`**. Interfaccia, batch e CLI chiamano la stessa funzione `compose(job)` (e, per la sequenza completa con le parti AI, `pipeline.render` / `apply_instructions` / `retouch`). In questo modo ogni cosa che funziona da riga di comando funziona anche nella GUI.
 
 ---
 
@@ -166,6 +170,8 @@ Così un'unica logica gestisce sia le foto dall'alto (H ≈ similitudine) sia qu
 5. **Adattamento luce e colore**: si confrontano media e deviazione di L, a, b (LAB) del mosaico con un anello di sfondo intorno all'area, e il mosaico viene spostato verso quei valori con intensità `armonizzazione` (predefinita 0,3, così il colore originale resta riconoscibile). Poi si applicano `luminosita` e `temperatura` manuali.
 6. **Grana** (opzionale): rumore leggero uguale a quello stimato sullo sfondo, perché il mosaico non sembri "troppo pulito".
 
+**Velocità.** Sfondo, mosaico e rettangolo verde restano in memoria tra un'anteprima e l'altra (`imageio.load_image_cached`, cache per percorso + data di modifica, array in sola lettura). Gli effetti 2–6 lavorano solo sul riquadro del mosaico, allargato di un margine che copre tutto il raggio dei filtri (ombra, contatto, spessore, anello di armonizzazione): fuori dal riquadro il risultato è identico allo sfondo. Il livello della grana si stima comunque sull'intero sfondo. L'anello di armonizzazione si ricava con `distanceTransform` (non con una dilatazione dal kernel enorme) e l'inpaint del verde lavora solo nel riquadro del verde rimasto scoperto.
+
 ---
 
 ## 6. Parametri e integrazione con Claude
@@ -193,9 +199,11 @@ Nell'interfaccia ogni campo è un cursore, nascosto sotto "Regolazioni avanzate"
 - **Modello**: `claude-haiku-5-5`, con `output_config.effort = "low"` (il compito è semplice).
 - **Output strutturato**: `output_config.format` con lo JSON Schema di `ComposeParams` (con l'SDK Python si usa `client.messages.parse()` e la validazione è automatica). Tutti i campi sono opzionali: Claude restituisce **solo quelli citati**, e gli altri restano ai valori correnti.
 - **Prompt di sistema** (fisso, quindi cache-friendly): spiega i campi in italiano, con esempi ("ombra a sinistra" → `ombra_direzione_gradi: 180`; "ombra più netta" → `ombra_morbidezza: 0.2`). Ai valori fuori intervallo viene applicato il clamp lato client.
-- **Cache locale**: chiave = hash(istruzioni normalizzate + versione dello schema), salvata su file JSON nella cartella cache utente. Nel batch, cento righe con le stesse istruzioni fanno una sola chiamata.
-- **Servizio**: `Settings.provider` = `anthropic` (SDK) oppure `openrouter` (`POST https://openrouter.ai/api/v1/chat/completions` con `httpx`, già installato con l'SDK; modelli `openrouter_model_instructions|light`, default `anthropic/claude-haiku-5.5` e `anthropic/claude-sonnet-5.5`, slug verificati sull'elenco pubblico `/api/v1/models`). Output con `response_format` json_schema strict; se il modello lo rifiuta si riprova una volta senza e il JSON si estrae dal testo. Chiave in keyring con nome separato (fallback `OPENROUTER_API_KEY`); la cache include servizio e modello. `verify_api_key` per OpenRouter usa `GET /api/v1/key`.
+- **Cache locale**: chiave = hash(istruzioni normalizzate + versione dello schema + servizio + modello), un file per chiave in `cache_dir()/istruzioni/` (`cache.DiskCache`, si tengono le 500 risposte più recenti; la luce in `luce/`, il ritocco in `ritocco/`). Nel batch, cento righe con le stesse istruzioni fanno una sola chiamata.
+- **Servizio**: `Settings.provider` = `anthropic` (SDK) oppure `openrouter` (`POST https://openrouter.ai/api/v1/chat/completions` con `httpx`, già installato con l'SDK; modelli `openrouter_model_instructions|light`, default `anthropic/claude-haiku-5.5` e `anthropic/claude-sonnet-5.5`, slug verificati sull'elenco pubblico `/api/v1/models`). Output con `response_format` json_schema strict; se il modello lo rifiuta si riprova una volta senza e il JSON si estrae dal testo (se l'elenco dei modelli è già in memoria e dice che lo schema non è supportato, si salta subito il primo tentativo). Chiave in keyring con nome separato (fallback `OPENROUTER_API_KEY`); la cache include servizio e modello. `verify_api_key` per OpenRouter usa `GET /api/v1/key`.
 - **Errori**: se manca la chiave, se c'è un errore di rete o una risposta non valida → si prosegue con i parametri correnti e si mostra un avviso discreto. **La generazione non si blocca mai per Claude.**
+
+- **Struttura** (`core/ai.py`): un oggetto per servizio (`AnthropicProvider`, `OpenRouterProvider`, scelto da `provider_for(settings)`) con gli stessi metodi `call_json`, `verify_key`, `check_models`. I problemi diventano `AIError(kind)` (chiave, credito, limite di richieste, rete, tempo scaduto, modello inesistente, immagini non accettate, …): per Anthropic dalle eccezioni tipizzate dell'SDK, per OpenRouter dallo stato HTTP. `ai.message(errore, servizio, contesto)` è l'unico punto che scrive i messaggi in italiano (istruzioni → "Uso i parametri attuali.", luce → "Nessun suggerimento.", ritocco → "Ritocco AI non eseguito: …"). Client riusati tra le chiamate (connessioni tenute aperte). Il prompt di sistema (~700 token) è sotto la soglia minima del prompt caching di Anthropic: non serve attivarlo.
 
 ### 6.3 Suggerimento della luce (opzionale, `instructions.suggest_light`)
 

@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pytest
 
-from arloc.core import harmonize, instructions, settings
+from arloc.core import ai, harmonize, instructions, settings
 from arloc.core.models import ComposeResult, Quad
 
 
@@ -25,7 +25,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "get_openrouter_key", lambda: "or-test")
     st = settings.Settings(provider="openrouter")
     monkeypatch.setattr(settings, "load_settings", lambda: st)
-    monkeypatch.setattr(instructions, "_MODELS_CACHE", None)
+    monkeypatch.setattr(ai, "_MODELS_CACHE", None)
 
 
 def scene():
@@ -51,7 +51,7 @@ def post_returns(monkeypatch, resp, calls=None):
         if calls is not None:
             calls.append(json)
         return resp
-    monkeypatch.setattr(instructions.httpx, "post", post)
+    monkeypatch.setattr(ai._http, "post", post)
 
 
 def test_mosaic_untouched_outside_changed(monkeypatch):
@@ -103,7 +103,7 @@ def test_no_image_and_errors(monkeypatch):
     post_returns(monkeypatch, _Resp(402, {"error": {"message": "credits"}}))
     out, warn = harmonize.harmonize(r, r.mosaic_mask)
     assert np.array_equal(out, r.image) and "credito" in warn
-    monkeypatch.setattr(instructions.httpx, "post", lambda *a, **k: (_ for _ in ()).throw(instructions.httpx.ReadTimeout("t")))
+    monkeypatch.setattr(ai._http, "post", lambda *a, **k: (_ for _ in ()).throw(ai.httpx.ReadTimeout("t")))
     out, warn = harmonize.harmonize(r, r.mosaic_mask)
     assert "tempo scaduto" in warn
 
@@ -152,7 +152,7 @@ def mock_models(monkeypatch, models=MODELS):
     def get(url, headers=None, timeout=None):
         calls.append(url)
         return _Resp(200, {"data": [dict(v, id=k) for k, v in models.items()]})
-    monkeypatch.setattr(instructions.httpx, "get", get)
+    monkeypatch.setattr(ai._http, "get", get)
     return calls
 
 
@@ -177,21 +177,21 @@ def test_check_models_missing_wrongrole_ok(monkeypatch):
 
 
 def test_check_models_never_raises(monkeypatch):
-    monkeypatch.setattr(instructions.httpx, "get", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(ai._http, "get", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     res = instructions.check_models(settings.Settings(provider="openrouter"))
     assert all(r[1] == "warn" for r in res)
 
 
 def test_check_models_anthropic(monkeypatch):
-    class NotFoundError(Exception):
-        pass
+    import anthropic
+    resp = ai.httpx.Response(404, request=ai.httpx.Request("GET", "https://api.anthropic.com/v1/models/claude-x"))
 
     class C:
         class models:
             @staticmethod
             def retrieve(m):
                 if m == "claude-x":
-                    raise NotFoundError("nf")
+                    raise anthropic.NotFoundError("nf", response=resp, body=None)
     monkeypatch.setattr("anthropic.Anthropic", lambda **k: C)
     st = settings.Settings(model_instructions="claude-x", model_light="claude-ok")
     d = {r[0]: r for r in instructions.check_models(st, key="sk")}
@@ -202,7 +202,7 @@ def test_check_models_anthropic(monkeypatch):
 def test_use_time_message_names_model(monkeypatch):
     monkeypatch.setattr(settings, "get_api_key", lambda: None)
     st = settings.Settings(provider="openrouter", openrouter_model_instructions="qwen/qwen-image-2.1-turbo")
-    monkeypatch.setattr(instructions.httpx, "post",
+    monkeypatch.setattr(ai._http, "post",
                         lambda *a, **k: _Resp(404, {"error": {"message": "No endpoints found for qwen/qwen-image-2.1-turbo"}}))
     from arloc.core.models import ComposeParams
     p, w = instructions.parse_instructions("ombra", ComposeParams(), st)

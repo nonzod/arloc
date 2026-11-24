@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from arloc.core import batch
+from arloc.core import batch, pipeline  # noqa: F401  (importato prima degli stub)
 from arloc.core.models import ArlocError, ComposeParams, OutputPreset, Quad
 
 DEFAULT = OutputPreset("shopify", 2048, 2048, "jpg", 90)
@@ -106,7 +106,7 @@ def test_run_batch_report_and_failure_isolation(tmp_path, monkeypatch):
     rows = batch.read_batch(f, DEFAULT)
     calls = []
 
-    def fake_compose(job):
+    def fake_compose(job, preview_max=None):
         calls.append(job)
         if job.larghezza_mosaico_cm == 31:
             raise ArlocError("boom")
@@ -117,10 +117,9 @@ def test_run_batch_report_and_failure_isolation(tmp_path, monkeypatch):
         p.write_bytes(b"x")
         return p
 
-    monkeypatch.setitem(sys.modules, "arloc.core.compose", types.SimpleNamespace(compose=fake_compose))
-    monkeypatch.setattr(sys.modules["arloc.core"], "compose", sys.modules["arloc.core.compose"], raising=False)
-    monkeypatch.setattr(sys.modules["arloc.core.presets"], "export", fake_export, raising=False)
-    monkeypatch.setattr("arloc.core.instructions.parse_instructions",
+    monkeypatch.setattr("arloc.core.pipeline.compose", fake_compose)
+    monkeypatch.setattr("arloc.core.presets.export", fake_export, raising=False)
+    monkeypatch.setattr("arloc.core.pipeline.parse_instructions",
                         lambda t, c, s=None: (c.updated(ombra_direzione_gradi=180), None))
     report = batch.run_batch(rows, tmp_path / "out")
     assert report.name.startswith("report_") and report.suffix == ".csv"
@@ -149,7 +148,7 @@ def test_misure_automatiche_se_colonne_vuote_e_parziali(tmp_path):
 
 
 def test_ritocco_ai_column(tmp_path):
-    from arloc.core import batch
+    from arloc.core import batch, pipeline  # noqa: F401  (importato prima degli stub)
     for n in ("a.jpg", "b.jpg"):
         (tmp_path / n).write_bytes(b"x")
     f = tmp_path / "b.csv"

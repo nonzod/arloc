@@ -33,7 +33,12 @@ def fill_green(bg: np.ndarray, green_mask: np.ndarray | None, alpha: np.ndarray)
     residual[covered > 0] = 0
     if not residual.any():
         return bg, 0.0
-    out = cv2.inpaint(bg, residual, 3, cv2.INPAINT_TELEA)
+    # solo nel riquadro del verde residuo (+ margine oltre il raggio 3): stesso risultato, molto più veloce
+    x, y, w, h = cv2.boundingRect(residual)
+    m = 8
+    ys, xs = slice(max(0, y - m), y + h + m), slice(max(0, x - m), x + w + m)
+    out = np.array(bg, copy=True)
+    out[ys, xs] = cv2.inpaint(np.ascontiguousarray(bg[ys, xs]), np.ascontiguousarray(residual[ys, xs]), 3, cv2.INPAINT_TELEA)
     return out, frac
 
 
@@ -81,10 +86,11 @@ def harmonize(mosaic: np.ndarray, alpha: np.ndarray, bg: np.ndarray, params) -> 
     k = params.armonizzazione
     solid = alpha > 0.5
     if k > 0 and solid.sum() > 100:
-        outer = cv2.dilate((alpha > 0.5).astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1)
+        # anello di sfondo attorno al mosaico (distanza 5..r+1 px): distanceTransform costa poco
+        # anche quando r è grande, al contrario di una dilatazione con un kernel enorme
         r = int(0.15 * math.sqrt(solid.sum()))
-        outer = cv2.dilate(outer, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
-        ring = (outer > 0) & ~cv2.dilate(solid.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
+        dist = cv2.distanceTransform((~solid).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        ring = (dist > 5) & (dist <= r + 1)
         if ring.sum() > 100:
             blab = _lab(bg)
             for c, strength in ((0, 0.5), (1, 0.5), (2, 0.5)):
@@ -99,12 +105,18 @@ def harmonize(mosaic: np.ndarray, alpha: np.ndarray, bg: np.ndarray, params) -> 
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR).astype(np.float32)
 
 
-def add_grain(mosaic: np.ndarray, alpha: np.ndarray, bg: np.ndarray, params) -> np.ndarray:
-    """Rumore simile a quello dello sfondo (livello stimato dall'alta frequenza)."""
+def grain_sigma(bg: np.ndarray, alpha: np.ndarray) -> float:
+    """Livello di rumore dello sfondo (alta frequenza), fuori dal mosaico."""
+    gray = cv2.cvtColor(np.clip(bg, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    return float((gray - cv2.GaussianBlur(gray, (0, 0), 1.5))[alpha < 0.01].std())
+
+
+def add_grain(mosaic: np.ndarray, alpha: np.ndarray, bg: np.ndarray, params, sigma: float | None = None) -> np.ndarray:
+    """Rumore simile a quello dello sfondo (livello stimato dall'alta frequenza, o `sigma` se già noto)."""
     if params.grana <= 0:
         return mosaic
-    gray = cv2.cvtColor(np.clip(bg, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-    sigma = float((gray - cv2.GaussianBlur(gray, (0, 0), 1.5))[alpha < 0.01].std())
+    if sigma is None:
+        sigma = grain_sigma(bg, alpha)
     rng = np.random.default_rng(0)
     noise = rng.normal(0, 1, alpha.shape).astype(np.float32) * sigma * (0.5 + 1.5 * params.grana)
     return mosaic + noise[:, :, None]

@@ -1,6 +1,7 @@
 """Lettura e scrittura immagini (percorsi con spazi/unicode, orientamento EXIF, alpha)."""
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -27,6 +28,51 @@ def load_image(path) -> np.ndarray:
         raise ArlocError(f"Non riesco a leggere l'immagine: {p.name}") from e
     code = cv2.COLOR_RGBA2BGRA if arr.shape[2] == 4 else cv2.COLOR_RGB2BGR
     return np.ascontiguousarray(cv2.cvtColor(arr, code))
+
+
+def file_key(path) -> tuple[str, int, int]:
+    """Identità di un file su disco (percorso, data di modifica, dimensione): cambia se il file cambia."""
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        raise ArlocError(f"Non trovo il file: {p}") from None
+    return str(p.resolve()), st.st_mtime_ns, st.st_size
+
+
+@lru_cache(maxsize=4)
+def _load_cached(key: tuple[str, int, int]) -> np.ndarray:
+    img = load_image(key[0])
+    img.flags.writeable = False
+    return img
+
+
+def load_image_cached(path) -> np.ndarray:
+    """Come `load_image`, ma tiene in memoria le ultime immagini lette (anteprime ripetute).
+
+    L'array restituito è in SOLA LETTURA: chi deve modificarlo ne faccia una copia.
+    """
+    return _load_cached(file_key(path))
+
+
+def downscale(img: np.ndarray, long_side: int,
+              interpolation: int = cv2.INTER_AREA) -> tuple[np.ndarray, float]:
+    """Riduce l'immagine (o la maschera) finché il lato lungo è al massimo `long_side`. Ritorna (img, scala)."""
+    s = long_side / max(img.shape[:2])
+    if s >= 1:
+        return img, 1.0
+    return cv2.resize(img, None, fx=s, fy=s, interpolation=interpolation), s
+
+
+def encode_jpeg(img: np.ndarray, long_side: int, quality: int = 90) -> bytes:
+    """JPEG (BGR, alpha ignorato) ridotto al lato lungo indicato: per inviare immagini ai servizi AI."""
+    if img.ndim == 3 and img.shape[2] == 4:
+        img = img[:, :, :3]
+    img, _ = downscale(img, long_side)
+    ok, buf = cv2.imencode(".jpg", np.ascontiguousarray(img), [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+    if not ok:
+        raise ValueError("Impossibile preparare l'immagine.")
+    return buf.tobytes()
 
 
 def save_image(img: np.ndarray, path, formato: str = "jpg", qualita: int = 90) -> Path:

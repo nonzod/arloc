@@ -7,13 +7,14 @@ Mai eccezioni verso il chiamante: in caso di problemi si ritorna l'immagine orig
 from __future__ import annotations
 
 import base64
-import hashlib
 
 import cv2
 import numpy as np
 
+from . import ai
 from . import settings as _settings
-from .instructions import OPENROUTER_URL, _or_err_text, _or_headers, httpx, openrouter_models
+from .cache import DiskCache, make_key
+from .imageio import encode_jpeg
 from .models import ComposeResult
 
 PROMPT_VERSION = "1"
@@ -24,6 +25,7 @@ GAIN_MAX = 0.10          # correzione di luminosità massima sul mosaico (±10%)
 MOVED_MSG = "Il ritocco AI ha spostato l'immagine: tenuto il risultato originale."
 # stima: token d'immagine in uscita (≈1K px) e in ingresso per il calcolo del costo
 _OUT_TOKENS, _IN_TOKENS = 1120, 1500
+_cache = DiskCache("ritocco", max_items=40, suffix=".bin")
 
 PROMPT = (
     "You are a photo retoucher. Edit this photo, a composite in which a mosaic panel was digitally placed on a "
@@ -38,33 +40,9 @@ PROMPT = (
 
 
 # ---------------------------------------------------------------- utilità
-def _encode_jpeg(img: np.ndarray) -> bytes:
-    h, w = img.shape[:2]
-    s = SEND_MAX / max(h, w)
-    if s < 1:
-        img = cv2.resize(img, (max(1, round(w * s)), max(1, round(h * s))), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", np.ascontiguousarray(img), [cv2.IMWRITE_JPEG_QUALITY, 92])
-    if not ok:
-        raise ValueError("Impossibile preparare l'immagine.")
-    return buf.tobytes()
-
-
 def _decode(raw: bytes) -> np.ndarray | None:
     img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
     return img if img is not None and img.size else None
-
-
-def _cache_path(digest: str):
-    return _settings.cache_dir() / f"ritocco_{digest}.bin"
-
-
-def _prune_cache(keep: int = 40) -> None:
-    try:
-        files = sorted(_settings.cache_dir().glob("ritocco_*.bin"), key=lambda p: p.stat().st_mtime)
-        for p in files[:-keep]:
-            p.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def _image_from_response(data) -> bytes | None:
@@ -89,7 +67,7 @@ def _image_from_response(data) -> bytes | None:
                 continue
         if url.startswith("http"):
             try:
-                r = httpx.get(url, timeout=60.0)
+                r = ai._http.get(url, timeout=60.0)
                 if r.status_code < 400:
                     return r.content
             except Exception:
@@ -97,57 +75,22 @@ def _image_from_response(data) -> bytes | None:
     return None
 
 
-def _http_warning(status: int, detail: str, model: str) -> str:
-    d = (detail or "").lower()
-    if status in (401, 403):
-        return "Ritocco AI non eseguito: chiave OpenRouter non valida."
-    if status == 402:
-        return "Ritocco AI non eseguito: credito OpenRouter esaurito (ricaricalo sul sito di OpenRouter)."
-    if status == 429:
-        return "Ritocco AI non eseguito: troppe richieste a OpenRouter, riprova tra poco."
-    if status == 404 or "no endpoints" in d or "not a valid model" in d:
-        return (f"Ritocco AI non eseguito: il modello «{model}» non esiste su OpenRouter "
-                "(controllalo nelle Impostazioni, Modelli avanzati, Verifica).")
-    if status == 400:
-        return (f"Ritocco AI non eseguito: il modello «{model}» non accetta questa richiesta "
-                "(deve ricevere e restituire immagini).")
-    return "Ritocco AI non eseguito: errore di OpenRouter."
-
-
-def _request(model: str, jpeg: bytes, key: str) -> tuple[bytes | None, str | None]:
-    """Chiama OpenRouter. Ritorna (immagine, None) oppure (None, avviso in italiano)."""
-    body = {
+def _request(model: str, jpeg: bytes) -> bytes:
+    """Chiama OpenRouter e ritorna l'immagine ricevuta. Solleva ai.AIError."""
+    url = "data:image/jpeg;base64," + base64.standard_b64encode(jpeg).decode("ascii")
+    data = ai.provider_for("openrouter").chat({
         "model": model,
         "modalities": ["image", "text"],
         "messages": [{"role": "user", "content": [
-            {"type": "text", "text": PROMPT},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,"
-                                                + base64.standard_b64encode(jpeg).decode("ascii")}},
-        ]}],
-    }
-    try:
-        r = httpx.post(OPENROUTER_URL + "/chat/completions", headers=_or_headers(key), json=body, timeout=180.0)
-    except httpx.TimeoutException:
-        return None, "Ritocco AI non eseguito: OpenRouter non risponde (tempo scaduto)."
-    except httpx.HTTPError:
-        return None, "Ritocco AI non eseguito: impossibile contattare OpenRouter (rete)."
-    try:
-        data = r.json()
-    except Exception:
-        data = None
-    err = isinstance(data, dict) and data.get("error")
-    if r.status_code >= 400 or err:
-        code = r.status_code
-        if code < 400 and isinstance(err, dict) and isinstance(err.get("code"), int):
-            code = err["code"]
-        return None, _http_warning(code, _or_err_text(data), model)
+            {"type": "text", "text": PROMPT}, {"type": "image_url", "image_url": {"url": url}}]}],
+    }, timeout=180.0)
     try:
         raw = _image_from_response(data)
     except Exception:
         raw = None
     if raw is None:
-        return None, f"Ritocco AI non eseguito: il modello «{model}» non ha restituito nessuna immagine."
-    return raw, None
+        raise ai.AIError("no_output_image", model)
+    return raw
 
 
 # ---------------------------------------------------------------- allineamento e protezione
@@ -230,7 +173,7 @@ def estimate_cost_usd(settings=None) -> float | None:
     """Stima del costo di un ritocco (dollari), dai prezzi pubblici di OpenRouter; None se non disponibile."""
     try:
         settings = settings or _settings.load_settings()
-        models = openrouter_models()
+        models = ai.openrouter_models()
         pr = (models or {}).get(settings.openrouter_model_retouch, {}).get("pricing") or {}
         img_out = float(pr.get("image_output") or pr.get("completion") or 0)
         cost = img_out * _OUT_TOKENS + float(pr.get("prompt") or 0) * _IN_TOKENS
@@ -251,23 +194,15 @@ def harmonize(result: ComposeResult, mosaic_mask_out: np.ndarray | None, setting
             return orig, "Ritocco AI non eseguito: manca la chiave di OpenRouter (impostala nelle Impostazioni)."
         model = settings.openrouter_model_retouch
         mask = _mask_for(result, mosaic_mask_out)
-        jpeg = _encode_jpeg(orig)
-        digest = hashlib.sha256(jpeg + b"|" + model.encode() + b"|" + PROMPT_VERSION.encode()
-                                + b"|" + PROMPT.encode()).hexdigest()
-        raw = None
-        try:
-            raw = _cache_path(digest).read_bytes()
-        except Exception:
-            pass
+        jpeg = encode_jpeg(orig, SEND_MAX, 92)
+        key = make_key(jpeg, model, PROMPT_VERSION, PROMPT)
+        raw = _cache.get_bytes(key)
         if raw is None:
-            raw, warn = _request(model, jpeg, key)
-            if raw is None:
-                return orig, warn
             try:
-                _cache_path(digest).write_bytes(raw)
-                _prune_cache()
-            except Exception:
-                pass
+                raw = _request(model, jpeg)
+            except Exception as e:
+                return orig, ai.message(e, ai.provider_for("openrouter"), "retouch")
+            _cache.put_bytes(key, raw)
         out = _decode(raw)
         if out is None:
             return orig, "Ritocco AI non eseguito: l'immagine ricevuta non è leggibile."

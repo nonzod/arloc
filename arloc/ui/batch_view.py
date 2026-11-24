@@ -225,8 +225,8 @@ class BatchView(QWidget):
 
     def _use_claude(self) -> bool:
         try:
-            from arloc.core.settings import get_api_key
-            return bool(get_api_key())
+            from arloc.core.settings import get_key, load_settings
+            return bool(get_key(load_settings().provider))   # chiave del servizio scelto (Anthropic o OpenRouter)
         except Exception:  # noqa: BLE001
             return False
 

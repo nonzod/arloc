@@ -7,10 +7,10 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
-from .core.compose import compose
 from .core.geometry import parse_area
 from .core.imageio import FORMATI, save_image
 from .core.models import ArlocError, ComposeParams, Job
+from .core.pipeline import render
 from .core.presets import export, parse_preset
 
 # nome opzione -> campo di ComposeParams
@@ -70,30 +70,13 @@ def _run_compose(a: argparse.Namespace) -> int:
     else:
         w_cm, h_cm = _parse_size_cm(a.mosaico_cm)
     params = ComposeParams().updated(**{f.name: getattr(a, f.name) for f in fields(ComposeParams)})
-    warnings: list[str] = []
-    if a.istruzioni:
-        try:
-            from .core.instructions import parse_instructions
-            params, warn = parse_instructions(a.istruzioni, params)
-            if warn:
-                warnings.append(warn)
-        except ImportError:
-            warnings.append("Le istruzioni in testo libero non sono ancora disponibili.")
     preset = parse_preset(a.preset) if a.preset else None
     job = Job(sfondo=Path(a.sfondo), mosaico=Path(a.mosaico), larghezza_sfondo_cm=(a.sfondo_cm or 0.0) if misure == "reali" else 0.0,
               larghezza_mosaico_cm=w_cm, altezza_mosaico_cm=h_cm,
               area=parse_area(a.area) if a.area else None,
               istruzioni=a.istruzioni or "", params=params, preset=preset, scontorno=a.scontorno,
-              misure="reali" if misure == "reali" else "automatiche")
-
-    result = compose(job, preview_max=a.anteprima)
-    if a.ritocco_ai and not a.anteprima:
-        from .core.harmonize import harmonize
-        result.image, warn = harmonize(result, result.mosaic_mask)
-        if warn:
-            warnings.append(warn)
-    elif a.ritocco_ai:
-        warnings.append("Il ritocco AI non si applica all'anteprima ridotta.")
+              misure="reali" if misure == "reali" else "automatiche", ritocco_ai=a.ritocco_ai)
+    _, result, warnings = render(job, preview_max=a.anteprima)
     out = Path(a.out)
     if preset:
         path = export(result, preset, out)

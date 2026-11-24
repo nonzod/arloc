@@ -138,9 +138,12 @@ def _build_job(raw: dict, base: Path, default_preset: OutputPreset) -> Job:
 
 
 def run_batch(rows, out_dir, progress=None, should_stop=None, use_claude=True) -> Path:
-    from . import compose as _compose, presets
+    from . import presets
+    from .pipeline import render
+    from .settings import load_settings
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    settings = load_settings()
     total = len(rows)
     used: set[str] = set()
     for n, row in enumerate(rows, 1):
@@ -150,21 +153,7 @@ def run_batch(rows, out_dir, progress=None, should_stop=None, use_claude=True) -
             row.status, row.error = "saltata", "Interrotta dall'utente."
         else:
             try:
-                job = row.job
-                warns: list[str] = []
-                if use_claude and job.istruzioni.strip():
-                    from .instructions import parse_instructions
-                    params, warn = parse_instructions(job.istruzioni, job.params)
-                    job.params = params
-                    if warn:
-                        warns.append(warn)
-                result = _compose.compose(job)
-                if job.ritocco_ai:
-                    from .harmonize import harmonize
-                    img, warn = harmonize(result, result.mosaic_mask)
-                    result.image = img
-                    if warn:
-                        warns.append(warn)
+                job, result, warns = render(row.job, settings, use_claude=use_claude)
                 name, k = job.nome_output, 2
                 while name.lower() in used:
                     name, k = f"{job.nome_output}_{k}", k + 1

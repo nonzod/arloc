@@ -705,7 +705,7 @@ class MainWindow(QMainWindow):
         if self.bg_img is None:
             self._notice("Scegli prima l'immagine di sfondo.", "warn")
             return
-        bg = self.bg_path
+        bg = self.bg_img   # già in memoria: niente seconda lettura dal disco
         settings = self.settings
         self.panel.btn_light.setEnabled(False)
 
@@ -751,12 +751,9 @@ class MainWindow(QMainWindow):
 
         def work():
             from arloc.core.compose import compose
-            params = params0
-            warn = None
-            if text:
-                from arloc.core.instructions import parse_instructions
-                params, warn = parse_instructions(text, params0, settings)
-            return params, warn, compose(job_fn(params, text))
+            from arloc.core.pipeline import apply_instructions
+            job, warn = apply_instructions(job_fn(params0, text), settings)
+            return job.params, warn, compose(job)
 
         def done(res):
             params, warn, result = res
@@ -790,11 +787,11 @@ class MainWindow(QMainWindow):
         seq = self._seq
 
         def work():
-            from arloc.core.harmonize import harmonize
-            return harmonize(result, result.mosaic_mask, settings)
+            from arloc.core.pipeline import retouch
+            return retouch(result, settings)
 
         def done(r):
-            img, warn = r
+            img, warn = r[0].image, r[1]
             self._set_busy(False)
             if seq != self._seq:
                 return
@@ -835,15 +832,13 @@ class MainWindow(QMainWindow):
         self.panel.btn_save.setText("Salvo…")
 
         def work():
-            import dataclasses
             from arloc.core.compose import compose
+            from arloc.core.pipeline import retouch as ai_retouch
             from arloc.core.presets import export
             res = cached[1] if cached else compose(job_fn(params, text))
             final, warn = res, None
             if retouch:   # il ritocco va prima del preset (la risposta è in cache su disco: nessuna seconda chiamata)
-                from arloc.core.harmonize import harmonize
-                img, warn = harmonize(res, res.mosaic_mask, settings)
-                final = dataclasses.replace(res, image=img, warnings=list(res.warnings))
+                final, warn = ai_retouch(res, settings)
             return res, export(final, preset, base), warn
 
         def done(r):

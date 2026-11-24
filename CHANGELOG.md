@@ -24,7 +24,14 @@ Formato: [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), versioni seco
 - `CONTRACTS.md`: firme pubbliche tra i moduli.
 - Packaging: icona dell'app (finestra, exe Windows, app macOS, AppImage) generata da `packaging/make_icon.py`; build PyInstaller provato su Linux.
 
+### Modificato
+- Anteprima e generazione più veloci (misurati su esempi con maschera già calcolata, come nella GUI: anteprima da 3 a 5 volte più rapida, ~40–130 ms; immagine finale 5000 px da 5,4 s a 1,3 s). Sfondo, mosaico e rettangolo verde restano in memoria tra un'anteprima e l'altra; gli effetti lavorano solo sulla zona del mosaico; l'anello di armonizzazione usa `distanceTransform` invece di una dilatazione con un kernel enorme; l'inpaint del verde lavora solo dove serve. Risultati identici a prima (differenze ≤ 3 livelli su 255; la grana cambia solo la disposizione casuale, non l'intensità).
+- Servizi AI riorganizzati: un oggetto per servizio (`core/ai.py`: Anthropic, OpenRouter) con le stesse funzioni, errori dalle eccezioni tipizzate dell'SDK Anthropic (prima dal nome della classe) e messaggi in italiano scritti in un solo punto; client e connessioni riusati tra le chiamate; con OpenRouter, se si sa già che il modello non supporta le risposte strutturate, niente tentativo a vuoto. Il suggerimento luce usa l'immagine già in memoria.
+- Cache delle risposte AI unificata (`core/cache.py`): un file per risposta in `istruzioni/`, `luce/`, `ritocco/`, con limite di dimensione (prima un unico JSON che cresceva senza limite). La vecchia cache viene ignorata.
+- Sequenza istruzioni → composizione → ritocco AI scritta una volta sola (`core/pipeline.py`) e usata da GUI, batch e CLI. `Settings.model(ruolo)`, `settings.get_key/set_key(servizio)`, `imageio.downscale/encode_jpeg` al posto di codice ripetuto.
+
 ### Corretto
+- Batch dalla GUI: le istruzioni in testo libero si applicano anche con OpenRouter (prima si controllava solo la chiave Anthropic).
 - Impostazioni: il contenuto scorre se lo schermo è basso (con modelli avanzati ed esito della verifica il dialogo non si schiaccia più).
 - Pannello dei passi: il selettore Misure non allarga più il pannello oltre i 340 px (prima il bordo destro e i valori dei cursori venivano tagliati).
 - L'avviso "mosaico più piccolo dell'area" compare solo se l'area è un rettangolo verde.

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 
 import platformdirs
@@ -12,8 +12,10 @@ from .models import OutputPreset
 
 APP = "arloc"
 _SERVICE = "arloc"
-_USER = "anthropic_api_key"
-_USER_OR = "openrouter_api_key"
+PROVIDERS = ("anthropic", "openrouter")
+# servizio -> (voce nel portachiavi, variabile d'ambiente di riserva)
+_KEYS = {"anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+         "openrouter": ("openrouter_api_key", "OPENROUTER_API_KEY")}
 
 
 @dataclass
@@ -31,6 +33,11 @@ class Settings:
     openrouter_model_retouch: str = "google/gemini-3.1-flash-image"
     last_dirs: dict = field(default_factory=dict)
 
+    def model(self, role: str) -> str:
+        """Modello configurato per il ruolo (instructions | light | retouch) sul servizio scelto; "" se non previsto."""
+        prefix = "openrouter_model_" if self.provider == "openrouter" else "model_"
+        return getattr(self, prefix + role, "") or ""
+
 
 def _config_path() -> Path:
     return Path(platformdirs.user_config_dir(APP)) / "settings.json"
@@ -44,14 +51,13 @@ def load_settings() -> Settings:
         return s
     if not isinstance(data, dict):
         return s
-    for k in ("output_dir", "default_preset", "model_instructions", "model_light",
-              "provider", "openrouter_model_instructions", "openrouter_model_light", "openrouter_model_retouch"):
-        if isinstance(data.get(k), str) and data[k]:
-            setattr(s, k, data[k])
-    if s.provider not in ("anthropic", "openrouter"):
+    for f in fields(Settings):   # stringhe non vuote e dizionari: si prendono così come sono
+        v = data.get(f.name)
+        if (isinstance(v, str) and v and isinstance(getattr(s, f.name), str)) or \
+                (isinstance(v, dict) and isinstance(getattr(s, f.name), dict)):
+            setattr(s, f.name, v)
+    if s.provider not in PROVIDERS:
         s.provider = "anthropic"
-    if isinstance(data.get("last_dirs"), dict):
-        s.last_dirs = data["last_dirs"]
     cp = data.get("custom_preset")
     if isinstance(cp, dict):
         try:
@@ -69,7 +75,9 @@ def save_settings(s: Settings) -> None:
     p.write_text(json.dumps(asdict(s), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _get_key(user: str, env: str) -> str | None:
+def get_key(provider: str) -> str | None:
+    """Chiave del servizio: portachiavi, altrimenti variabile d'ambiente."""
+    user, env = _KEYS[provider]
     try:
         import keyring
         key = keyring.get_password(_SERVICE, user)
@@ -80,8 +88,9 @@ def _get_key(user: str, env: str) -> str | None:
     return os.environ.get(env) or None
 
 
-def _set_key(user: str, key: str | None) -> None:
+def set_key(provider: str, key: str | None) -> None:
     """Salva (o cancella con None) nel portachiavi; senza portachiavi non fa nulla."""
+    user, _ = _KEYS[provider]
     try:
         import keyring
         if key:
@@ -96,19 +105,19 @@ def _set_key(user: str, key: str | None) -> None:
 
 
 def get_api_key() -> str | None:
-    return _get_key(_USER, "ANTHROPIC_API_KEY")
+    return get_key("anthropic")
 
 
 def set_api_key(key: str | None) -> None:
-    _set_key(_USER, key)
+    set_key("anthropic", key)
 
 
 def get_openrouter_key() -> str | None:
-    return _get_key(_USER_OR, "OPENROUTER_API_KEY")
+    return get_key("openrouter")
 
 
 def set_openrouter_key(key: str | None) -> None:
-    _set_key(_USER_OR, key)
+    set_key("openrouter", key)
 
 
 def cache_dir() -> Path:
